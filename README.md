@@ -5,7 +5,9 @@ past mistakes
 
 Every time your agent fails, NeuramineRL reflects on the failure and distills it into a
 *conditioned lesson* ("When submitting the booking form, use ISO dates; MM/DD/YYYY is silently
-rejected"). On future runs, the relevant lessons are retrieved and injected into the prompt.
+rejected"). On future runs, the top-k lessons relevant to *that task* (default 5) are retrieved
+and injected into the prompt under a hard token budget (default 800) — the block never grows
+with history, no matter how many lessons have accumulated.
 Crucially, NeuramineRL then **tracks whether each injected lesson actually improved outcomes** —
 lessons that help get promoted, lessons that don't decay and get pruned. No pile of stale
 superstitions.
@@ -63,6 +65,32 @@ Storing lessons is the easy part. The hard parts — the parts NeuramineRL owns 
 4. **Zero-config, local-first** — SQLite + local static embeddings. Nothing leaves your machine
    except the reflection call. No telemetry.
 
+## What does it cost in tokens?
+
+Injection is bounded, not cumulative — a sliding window, never a snowball:
+
+| Cost | When | Size |
+| --- | --- | --- |
+| Lesson block (input tokens) | runs with relevant lessons | typically 150–300 tokens, hard-capped at `token_budget` (default 800) |
+| Reflection call | failures only, off the hot path | ~2k input (transcript capped) + a few lessons out |
+| Dedup merge call | only when a new lesson overlaps an existing one | tiny |
+| Retrieval embeddings | every run | zero — embeddings run locally |
+
+The comparison that matters is not "800 tokens vs 0" — it's "800 tokens vs the cost of
+repeating failures." A failed agentic run wastes its entire token spend plus a retry. If a run
+costs ~10k tokens, injection overhead is ~2–3%, and preventing one failure per ~40 runs breaks
+even; everything past that is profit. Check what you're actually paying with
+`run.lessons.token_count` (this run) and `nm.stats().injected_tokens_estimate` (cumulative).
+
+Two tuning notes:
+
+- **Prompt caching**: place the lesson block *after* your static system prompt (or in the first
+  user message), not before it — a varying block early in the prompt invalidates the provider's
+  prompt-cache for everything behind it, which costs far more than the block itself. Between
+  failures the block is byte-identical, so positioned correctly it caches too.
+- **Budget by task type**: short decision tasks (classification, routing) rarely need more than
+  2 lessons — `Learner(k=2, token_budget=300)`. The defaults suit longer agentic runs.
+
 ## Core API
 
 | Call | Purpose |
@@ -74,7 +102,7 @@ Storing lessons is the easy part. The hard parts — the parts NeuramineRL owns 
 | `run.end(success=..., error=..., score=...)` | Record the outcome; triggers reflection on failure. |
 | `nm.feedback(run_id, note, success=...)` | Delayed outcome ("user said this was wrong two hours later"). |
 | `nm.lessons()` / `nm.forget(lesson_id)` | Audit and control what gets injected. |
-| `nm.stats()` | Baseline success rate, lesson counts by state, top/bottom lessons. |
+| `nm.stats()` | Baseline success rate, lesson counts by state, cumulative injected-token estimate. |
 
 Every stage is swappable via small Protocols: `Store`, `Embedder`, `LLMClient`,
 `OutcomeDetector`, `Reflector`, `Retriever`, `Injector`.

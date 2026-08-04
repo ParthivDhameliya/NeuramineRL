@@ -25,7 +25,7 @@ from .models import (
 )
 from .reflection.dedup import Deduplicator
 from .reflection.llm_reflector import FallbackReflector, LLMReflector
-from .retrieval.injector import Injector
+from .retrieval.injector import Injector, estimate_tokens
 from .retrieval.retriever import Retriever
 from .run import RecallResult, Run
 from .store.base import Store
@@ -37,6 +37,9 @@ class LearnerStats:
     scope: str
     baseline_success_rate: float
     lessons_by_state: dict[str, int]
+    injected_tokens_estimate: int
+    """Rough cumulative input tokens this scope's lesson injections have cost
+    across all runs (current lesson text x times injected, ~4 chars/token)."""
 
 
 class Learner:
@@ -169,12 +172,19 @@ class Learner:
             state: self._store.count_lessons(self.scope, (state,))
             for state in ("candidate", "active", "retired")
         }
+        lessons = self._store.get_lessons(self.scope, ("candidate", "active", "retired"))
+        injected_tokens = sum(
+            estimate_tokens(lesson.text) * lesson.times_injected
+            for lesson in lessons
+            if lesson.times_injected
+        )
         return LearnerStats(
             scope=self.scope,
             baseline_success_rate=self._store.baseline_success_rate(
                 self.scope, self.config.baseline_window
             ),
             lessons_by_state=by_state,
+            injected_tokens_estimate=injected_tokens,
         )
 
     def close(self) -> None:

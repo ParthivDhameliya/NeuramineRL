@@ -135,3 +135,10 @@ def test_stats(learner: Learner, fake_llm: FakeLLM) -> None:
     stats = learner.stats()
     assert stats.lessons_by_state["candidate"] == 1
     assert 0.0 <= stats.baseline_success_rate <= 1.0
+    assert stats.injected_tokens_estimate == 0  # seeded but never injected
+
+    with learner.run(task="doing X again") as run:
+        assert run.lessons  # injection happens here
+        run.end(success=True)
+    stats = learner.stats()
+    assert stats.injected_tokens_estimate > 0
