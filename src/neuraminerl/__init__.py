@@ -6,7 +6,7 @@ from .learner import Learner, LearnerStats
 from .models import Injection, Lesson, LessonDraft, Outcome, Step, Trajectory
 from .run import RecallResult, Run
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 __all__ = [
     "Injection",
