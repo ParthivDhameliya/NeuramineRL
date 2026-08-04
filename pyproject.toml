@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neuramine"
+version = "0.1.0.dev0"
+description = "Self-improvement for AI agents: learn from past mistakes, inject the lessons into future runs, and keep only the lessons that actually help."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Neuramine contributors" }]
+keywords = [
+    "ai",
+    "agents",
+    "llm",
+    "memory",
+    "self-improvement",
+    "reflection",
+    "procedural-memory",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+embeddings = ["model2vec>=0.3"]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.50"]
+all = ["neuramine[embeddings,anthropic,openai]"]
+dev = [
+    "neuramine[embeddings]",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/ParthivDhameliya/NeuramineRL"
+Documentation = "https://github.com/ParthivDhameliya/NeuramineRL#readme"
+Issues = "https://github.com/ParthivDhameliya/NeuramineRL/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neuramine"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["SIM108"]
+
+[tool.mypy]
+# No python_version pin: modern numpy stubs need 3.12+ syntax; the CI test
+# matrix guards 3.10 runtime compatibility instead.
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "model2vec.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/neuramine"]
