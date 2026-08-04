@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from neuramine import Learner
-from neuramine.llm.fake import FakeLLM
-from neuramine.models import Outcome, Trajectory
-from neuramine.reflection.llm_reflector import FallbackReflector, render_transcript
+from neuraminerl import Learner
+from neuraminerl.llm.fake import FakeLLM
+from neuraminerl.models import Outcome, Trajectory
+from neuraminerl.reflection.llm_reflector import FallbackReflector, render_transcript
 
 
 def _fail(learner: Learner, task: str, error: str = "it broke") -> str:
@@ -118,7 +118,7 @@ def test_fallback_reflector_without_llm() -> None:
 
 def test_transcript_truncation() -> None:
     trajectory = Trajectory(scope="s", task="t")
-    from neuramine.models import Step
+    from neuraminerl.models import Step
 
     trajectory.steps = [
         Step(trajectory_id=trajectory.id, index=i, kind="note", content="z" * 500)

@@ -40,7 +40,7 @@ class LearnerStats:
 
 
 class Learner:
-    """The facade. Zero-config: SQLite + local embeddings in ./.neuramine/,
+    """The facade. Zero-config: SQLite + local embeddings in ./.neuraminerl/,
     reflection LLM auto-detected from ANTHROPIC_API_KEY / OPENAI_API_KEY."""
 
     def __init__(
@@ -58,7 +58,7 @@ class Learner:
         self.scope = scope
 
         if store is None:
-            self._store: Store = SqliteStore(self.config.home / "neuramine.db")
+            self._store: Store = SqliteStore(self.config.home / "neuraminerl.db")
         elif isinstance(store, (str, Path)):
             self._store = SqliteStore(store)
         else:
@@ -100,7 +100,7 @@ class Learner:
         except ImportError:
             warnings.warn(
                 "model2vec is not installed; falling back to a crude hashing embedder. "
-                "For better lesson retrieval: pip install neuramine[embeddings]",
+                "For better lesson retrieval: pip install neuraminerl[embeddings]",
                 stacklevel=3,
             )
             return HashedEmbedder()

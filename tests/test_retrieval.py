@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from neuramine import Learner
-from neuramine.llm.fake import FakeLLM
-from neuramine.models import Lesson
-from neuramine.retrieval.injector import Injector
+from neuraminerl import Learner
+from neuraminerl.llm.fake import FakeLLM
+from neuraminerl.models import Lesson
+from neuraminerl.retrieval.injector import Injector
 
 
 def _insert(learner: Learner, condition: str, advice: str, **kw: object) -> Lesson:

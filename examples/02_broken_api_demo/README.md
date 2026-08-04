@@ -9,7 +9,7 @@ Two arms run the same 10 episodes x 5 orders:
 
 - **baseline** — the agent starts amnesiac every episode and keeps failing
   the same ways forever.
-- **neuramine** — failures are reflected into conditioned lessons, lessons
+- **neuraminerl** — failures are reflected into conditioned lessons, lessons
   are injected into later runs, and lesson health is tracked against the
   agent's baseline.
 
@@ -24,5 +24,5 @@ deterministic — it proves the *pipeline* (capture -> reflect -> dedup ->
 inject -> credit -> lifecycle), not the LLM. `--live` is the honest
 experiment.
 
-Expected offline output: baseline flat at 0%, neuramine climbing to 100% by
+Expected offline output: baseline flat at 0%, neuraminerl climbing to 100% by
 episode 3, and exactly five active lessons at the end.

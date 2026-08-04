@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from ..embeddings.base import Vector
-from ..exceptions import ConfigError, NeuramineError
+from ..exceptions import ConfigError, NeuramineRLError
 from ..models import (
     Injection,
     Lesson,
@@ -167,7 +167,7 @@ class SqliteStore:
                 "SELECT * FROM trajectories WHERE id = ?", (trajectory_id,)
             ).fetchone()
             if row is None:
-                raise NeuramineError(f"Unknown trajectory: {trajectory_id}")
+                raise NeuramineRLError(f"Unknown trajectory: {trajectory_id}")
             trajectory = Trajectory(
                 id=row["id"],
                 scope=row["scope"],
@@ -374,7 +374,7 @@ class SqliteStore:
             raise ConfigError(
                 f"This database stores {row['value']}-dim lesson embeddings but the current "
                 f"embedder produces {dim}-dim vectors. Use the original embedder, or start a "
-                f"new database (delete the .neuramine directory) to re-learn."
+                f"new database (delete the .neuraminerl directory) to re-learn."
             )
 
     @staticmethod
@@ -403,7 +403,7 @@ class SqliteStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
         if row is None:
-            raise NeuramineError(f"Unknown lesson: {lesson_id}")
+            raise NeuramineRLError(f"Unknown lesson: {lesson_id}")
         return self._lesson_from_row(row)
 
     def get_lessons(self, scope: str, states: Sequence[LessonState]) -> list[Lesson]:

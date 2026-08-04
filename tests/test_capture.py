@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from neuramine import Learner
-from neuramine.llm.fake import FakeLLM
+from neuraminerl import Learner
+from neuraminerl.llm.fake import FakeLLM
 
 
 def test_success_run(learner: Learner) -> None:

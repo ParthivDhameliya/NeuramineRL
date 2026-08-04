@@ -1,16 +1,16 @@
 """The README snippet, runnable. Run it twice:
 
-    python examples/01_quickstart.py   # the "agent" fails; neuramine reflects
+    python examples/01_quickstart.py   # the "agent" fails; neuraminerl reflects
     python examples/01_quickstart.py   # the lesson is injected; it succeeds
 
 Works best with ANTHROPIC_API_KEY or OPENAI_API_KEY set (real reflection).
 Without a key it still works, storing the raw failure as an observation.
-Delete ./.neuramine to reset.
+Delete ./.neuraminerl to reset.
 """
 
 from __future__ import annotations
 
-from neuramine import Learner
+from neuraminerl import Learner
 
 SYSTEM_PROMPT = "You are a booking agent.\n"
 
@@ -38,7 +38,7 @@ def main() -> None:
     print("outcome:", "success" if ok else f"failure ({error})")
 
     if not ok:
-        print("\nneuramine reflected on the failure. stored lessons:")
+        print("\nneuraminerl reflected on the failure. stored lessons:")
         for lesson in nm.lessons():
             print(f"  - {lesson.text}")
         print("\nrun me again — the agent will get these lessons up front.")

@@ -22,8 +22,8 @@ def from_spec(spec: str) -> LLMClient:
 
 def detect() -> LLMClient | None:
     """Pick a provider from environment keys; None when no key is set.
-    ``NEURAMINE_LLM`` overrides with an explicit spec."""
-    spec = os.environ.get("NEURAMINE_LLM")
+    ``NEURAMINERL_LLM`` overrides with an explicit spec."""
+    spec = os.environ.get("NEURAMINERL_LLM")
     if spec:
         return from_spec(spec)
     if os.environ.get("ANTHROPIC_API_KEY"):

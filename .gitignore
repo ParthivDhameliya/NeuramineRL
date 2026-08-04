@@ -10,7 +10,7 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
-.neuramine/
+.neuraminerl/
 *.db
 *.db-wal
 *.db-shm

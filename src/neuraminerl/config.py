@@ -9,8 +9,8 @@ ReflectMode = Literal["sync", "off"]
 
 
 def _default_home() -> Path:
-    env = os.environ.get("NEURAMINE_HOME")
-    return Path(env) if env else Path.cwd() / ".neuramine"
+    env = os.environ.get("NEURAMINERL_HOME")
+    return Path(env) if env else Path.cwd() / ".neuraminerl"
 
 
 @dataclass

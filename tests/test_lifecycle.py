@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from neuramine import Learner
-from neuramine.lessons.scoring import beta_lower_bound, decay
-from neuramine.llm.fake import FakeLLM
-from neuramine.models import Outcome, Trajectory
+from neuraminerl import Learner
+from neuraminerl.lessons.scoring import beta_lower_bound, decay
+from neuraminerl.llm.fake import FakeLLM
+from neuraminerl.models import Outcome, Trajectory
 
 
 def _seed_lesson(learner: Learner, fake_llm: FakeLLM, condition: str, advice: str) -> str:

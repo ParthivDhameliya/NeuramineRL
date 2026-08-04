@@ -1,12 +1,12 @@
-# Neuramine
+# NeuramineRL
 
-**Self-improvement for AI agents.** Neuramine gives your agent the ability to learn from its
+**Self-improvement for AI agents.** NeuramineRL gives your agent the ability to learn from its
 past mistakes
 
-Every time your agent fails, Neuramine reflects on the failure and distills it into a
+Every time your agent fails, NeuramineRL reflects on the failure and distills it into a
 *conditioned lesson* ("When submitting the booking form, use ISO dates; MM/DD/YYYY is silently
 rejected"). On future runs, the relevant lessons are retrieved and injected into the prompt.
-Crucially, Neuramine then **tracks whether each injected lesson actually improved outcomes** —
+Crucially, NeuramineRL then **tracks whether each injected lesson actually improved outcomes** —
 lessons that help get promoted, lessons that don't decay and get pruned. No pile of stale
 superstitions.
 
@@ -19,14 +19,14 @@ run agent → capture trajectory → detect outcome → reflect on failures
 ## Quickstart
 
 ```bash
-pip install neuramine[embeddings]
+pip install neuraminerl[embeddings]
 export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY — used for reflection
 ```
 
 ```python
-from neuramine import Learner
+from neuraminerl import Learner
 
-nm = Learner()  # zero config: SQLite + local embeddings in ./.neuramine/
+nm = Learner()  # zero config: SQLite + local embeddings in ./.neuraminerl/
 
 with nm.run(task="Book the cheapest NYC->SFO flight on the demo site") as run:
     prompt = SYSTEM_PROMPT + str(run.lessons)  # inject lessons from past failures
@@ -37,7 +37,7 @@ with nm.run(task="Book the cheapest NYC->SFO flight on the demo site") as run:
 
 Run it twice. The second run is smarter.
 
-On failure, Neuramine reflects (one cheap LLM call, off the hot path) and stores lessons like:
+On failure, NeuramineRL reflects (one cheap LLM call, off the hot path) and stores lessons like:
 
 ```
 <learned_lessons>
@@ -50,7 +50,7 @@ inapplicable to the current situation.
 
 ## Why not just a memory library?
 
-Storing lessons is the easy part. The hard parts — the parts Neuramine owns — are:
+Storing lessons is the easy part. The hard parts — the parts NeuramineRL owns — are:
 
 1. **Outcome capture** — failures detected from exceptions, explicit results, delayed user
    feedback (`nm.feedback(run_id, "that was wrong", success=False)`), or an optional LLM judge.

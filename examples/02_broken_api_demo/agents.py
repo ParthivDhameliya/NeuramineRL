@@ -4,7 +4,7 @@
   lessons block, emits order JSON, and reacts to error responses. The honest
   experiment.
 - ``ScriptedAgent``: deterministic stand-in that behaves naively unless the
-  injected lessons tell it better. Exercises the full neuramine pipeline
+  injected lessons tell it better. Exercises the full neuraminerl pipeline
   (capture -> reflect -> dedup -> inject -> credit) without API keys or
   nondeterminism — this is what CI runs.
 """
@@ -19,8 +19,8 @@ from typing import Any, ClassVar
 
 from mock_api import DOCS, ApiResult, OrdersAPI, OrderTask
 
-from neuramine import Run
-from neuramine.llm.base import LLMClient, LLMResponse, Message
+from neuraminerl import Run
+from neuraminerl.llm.base import LLMClient, LLMResponse, Message
 
 
 @dataclass

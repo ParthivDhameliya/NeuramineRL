@@ -3,15 +3,15 @@ fail -> reflect -> lesson -> inject -> succeed -> promote."""
 
 from __future__ import annotations
 
-from neuramine import Learner
-from neuramine.llm.fake import FakeLLM
+from neuraminerl import Learner
+from neuraminerl.llm.fake import FakeLLM
 
 
 def test_full_loop() -> None:
     fake_llm = FakeLLM()
     learner = Learner(store=":memory:", embedder="hashed", llm=fake_llm)
 
-    # Episode 1: the agent fails; neuramine reflects.
+    # Episode 1: the agent fails; neuraminerl reflects.
     fake_llm.queue(
         {
             "lessons": [
@@ -51,7 +51,7 @@ def test_degraded_mode_without_llm(monkeypatch: object) -> None:
     """No LLM key at all: still works, stores raw failure observations."""
     import pytest
 
-    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NEURAMINE_LLM"):
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NEURAMINERL_LLM"):
         monkeypatch.delenv(var, raising=False)  # type: ignore[attr-defined]
 
     with pytest.warns(UserWarning, match="No reflection LLM"):

@@ -1,4 +1,4 @@
-"""Neuramine: self-improvement for AI agents — learn from past mistakes,
+"""NeuramineRL: self-improvement for AI agents — learn from past mistakes,
 inject the lessons into future runs, keep only the lessons that help."""
 
 from .config import LearnerConfig

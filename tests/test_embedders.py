@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from neuramine.embeddings.hashed import HashedEmbedder
+from neuraminerl.embeddings.hashed import HashedEmbedder
 
 
 def test_deterministic() -> None:

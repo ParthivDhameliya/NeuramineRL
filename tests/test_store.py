@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from neuramine.embeddings.hashed import HashedEmbedder
-from neuramine.exceptions import ConfigError, NeuramineError
-from neuramine.models import Injection, Lesson, Outcome, Step, Trajectory
-from neuramine.store.sqlite import SqliteStore
+from neuraminerl.embeddings.hashed import HashedEmbedder
+from neuraminerl.exceptions import ConfigError, NeuramineRLError
+from neuraminerl.models import Injection, Lesson, Outcome, Step, Trajectory
+from neuraminerl.store.sqlite import SqliteStore
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def test_trajectory_roundtrip(store: SqliteStore) -> None:
 
 
 def test_unknown_trajectory_raises(store: SqliteStore) -> None:
-    with pytest.raises(NeuramineError):
+    with pytest.raises(NeuramineRLError):
         store.get_trajectory("nope")
 
 

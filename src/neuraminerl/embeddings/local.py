@@ -28,7 +28,7 @@ class LocalEmbedder:
             except ImportError as exc:
                 raise ConfigError(
                     "Local embeddings need the model2vec package. "
-                    "Install it with: pip install neuramine[embeddings]"
+                    "Install it with: pip install neuraminerl[embeddings]"
                 ) from exc
             self._model = StaticModel.from_pretrained(self.model_name)
             self.dim = int(self._model.dim)

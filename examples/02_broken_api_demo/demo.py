@@ -3,11 +3,11 @@
 Two arms run the same 10 episodes x 5 order tasks:
 
 - baseline:  the agent starts amnesiac every episode.
-- neuramine: failures are reflected into lessons, lessons are injected into
+- neuraminerl: failures are reflected into lessons, lessons are injected into
   later episodes, and lesson health is tracked.
 
 Offline (default, no keys needed): a deterministic scripted agent + scripted
-reflection exercise the full neuramine pipeline. Live (--live, needs
+reflection exercise the full neuraminerl pipeline. Live (--live, needs
 ANTHROPIC_API_KEY or OPENAI_API_KEY): a real LLM plays the agent and writes
 the reflections.
 
@@ -23,7 +23,7 @@ import sys
 from agents import EpisodeResult, LiveAgent, ScriptedAgent, ScriptedReflectionLLM
 from mock_api import TASKS, OrdersAPI, OrderTask
 
-from neuramine import Learner, Run
+from neuraminerl import Learner, Run
 
 
 def run_arm(
@@ -73,7 +73,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.live:
-        from neuramine.llm import auto
+        from neuraminerl.llm import auto
 
         llm = auto.detect()
         if llm is None:
@@ -88,8 +88,8 @@ def main() -> int:
     print(f"\n=== baseline (no memory{', live' if args.live else ''}) ===")
     baseline = run_arm("baseline ", args.episodes, learner=None, agent=agent)
 
-    print(f"\n=== neuramine (learning{', live' if args.live else ''}) ===")
-    learning = run_arm("neuramine", args.episodes, learner=learner, agent=agent)
+    print(f"\n=== neuraminerl (learning{', live' if args.live else ''}) ===")
+    learning = run_arm("neuraminerl", args.episodes, learner=learner, agent=agent)
 
     print("\n=== lessons learned ===")
     for lesson in learner.lessons():
@@ -103,7 +103,7 @@ def main() -> int:
     late = sum(learning[-4:]) / 4
     improvement = late - early
     flat = (sum(baseline[-4:]) / 4) - (sum(baseline[:2]) / 2)
-    print(f"neuramine arm improvement (late - early): {improvement:+.0%}")
+    print(f"neuraminerl arm improvement (late - early): {improvement:+.0%}")
     print(f"baseline arm improvement (late - early):  {flat:+.0%}")
 
     if args.check and improvement < 0.4:
