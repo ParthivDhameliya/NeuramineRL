@@ -15,21 +15,29 @@ from ..exceptions import LLMError
 from .base import LLMResponse, Message
 
 DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
 class OpenAIClient:
+    """Works against any OpenAI-Chat-Completions-compatible server (Groq,
+    Together, Fireworks, DeepSeek, OpenRouter, Azure, Ollama, vLLM, ...)
+    via ``base_url``."""
+
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
         api_key: str | None = None,
-        base_url: str = "https://api.openai.com/v1",
+        base_url: str | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.model = model
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self._base_url = base_url.rstrip("/")
+        self._api_key = (
+            api_key or os.environ.get("NEURAMINERL_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+        )
+        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
-        if not self._api_key:
+        # A custom base_url may be a local/keyless server (Ollama, vLLM).
+        if not self._api_key and self._base_url == DEFAULT_BASE_URL:
             raise LLMError("No OpenAI API key (set OPENAI_API_KEY)")
 
     def complete(
@@ -54,13 +62,13 @@ class OpenAIClient:
                 "type": "json_schema",
                 "json_schema": {"name": "result", "schema": json_schema, "strict": True},
             }
+        headers = {"content-type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         try:
             response = httpx.post(
                 f"{self._base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "content-type": "application/json",
-                },
+                headers=headers,
                 json=body,
                 timeout=self._timeout,
             )

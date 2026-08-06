@@ -15,6 +15,7 @@ from ..exceptions import LLMError
 from .base import LLMResponse, Message
 
 DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
 class AnthropicClient:
@@ -22,14 +23,19 @@ class AnthropicClient:
         self,
         model: str = DEFAULT_MODEL,
         api_key: str | None = None,
-        base_url: str = "https://api.anthropic.com",
+        base_url: str | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.model = model
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._base_url = base_url.rstrip("/")
+        self._api_key = (
+            api_key
+            or os.environ.get("NEURAMINERL_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY", "")
+        )
+        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
-        if not self._api_key:
+        # A custom base_url may be a local/keyless Anthropic-compatible server.
+        if not self._api_key and self._base_url == DEFAULT_BASE_URL:
             raise LLMError("No Anthropic API key (set ANTHROPIC_API_KEY)")
 
     def complete(
@@ -56,14 +62,13 @@ class AnthropicClient:
                 }
             ]
             body["tool_choice"] = {"type": "tool", "name": "emit"}
+        headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+        if self._api_key:
+            headers["x-api-key"] = self._api_key
         try:
             response = httpx.post(
                 f"{self._base_url}/v1/messages",
-                headers={
-                    "x-api-key": self._api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
+                headers=headers,
                 json=body,
                 timeout=self._timeout,
             )

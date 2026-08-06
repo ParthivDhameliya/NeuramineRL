@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "NeuramineRL"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Self-improvement for AI agents: learn from past mistakes, inject the lessons into future runs, and keep only the lessons that actually help."
 readme = "README.md"
 license = "Apache-2.0"
@@ -38,11 +38,10 @@ dependencies = [
 
 [project.optional-dependencies]
 embeddings = ["model2vec>=0.3"]
-anthropic = ["anthropic>=0.40"]
-openai = ["openai>=1.50"]
-all = ["neuraminerl[embeddings,anthropic,openai]"]
+postgres = ["psycopg[binary]>=3.1"]
+all = ["neuraminerl[embeddings,postgres]"]
 dev = [
-    "neuraminerl[embeddings]",
+    "neuraminerl[embeddings,postgres]",
     "pytest>=8",
     "pytest-cov>=5",
     "ruff>=0.8",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from .embeddings.hashed import HashedEmbedder
 from .embeddings.local import LocalEmbedder
 from .lessons.lifecycle import Lifecycle
 from .llm import auto as llm_auto
-from .llm.base import LLMClient
+from .llm.base import LLMClient, UsageEvent, UsageTrackingLLM
 from .models import (
     Injection,
     Lesson,
@@ -44,7 +45,10 @@ class LearnerStats:
 
 class Learner:
     """The facade. Zero-config: SQLite + local embeddings in ./.neuraminerl/,
-    reflection LLM auto-detected from ANTHROPIC_API_KEY / OPENAI_API_KEY."""
+    reflection LLM auto-detected from ANTHROPIC_API_KEY / OPENAI_API_KEY /
+    GEMINI_API_KEY. Pass a ``postgres://`` DSN as ``store`` for a shared
+    multi-process store, and ``on_usage`` to feed reflection spend into your
+    own cost tracking."""
 
     def __init__(
         self,
@@ -54,6 +58,7 @@ class Learner:
         llm: LLMClient | str | None = None,
         scope: str = "default",
         config: LearnerConfig | None = None,
+        on_usage: Callable[[UsageEvent], None] | None = None,
         **overrides: Any,
     ) -> None:
         base = config or LearnerConfig()
@@ -62,6 +67,10 @@ class Learner:
 
         if store is None:
             self._store: Store = SqliteStore(self.config.home / "neuraminerl.db")
+        elif isinstance(store, str) and store.startswith(("postgres://", "postgresql://")):
+            from .store.postgres import PostgresStore
+
+            self._store = PostgresStore(store)
         elif isinstance(store, (str, Path)):
             self._store = SqliteStore(store)
         else:
@@ -78,15 +87,17 @@ class Learner:
             self._llm: LLMClient | None = llm_auto.detect()
             if self._llm is None:
                 warnings.warn(
-                    "No reflection LLM configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY, "
-                    "or pass llm=...). Failures will be stored as raw observations instead "
-                    "of distilled lessons.",
+                    "No reflection LLM configured (set ANTHROPIC_API_KEY, OPENAI_API_KEY, or "
+                    "GEMINI_API_KEY, or pass llm=...). Failures will be stored as raw "
+                    "observations instead of distilled lessons.",
                     stacklevel=2,
                 )
         elif isinstance(llm, str):
             self._llm = llm_auto.from_spec(llm)
         else:
             self._llm = llm
+        if on_usage is not None and self._llm is not None:
+            self._llm = UsageTrackingLLM(self._llm, on_usage)
 
         self._reflector = LLMReflector(self._llm, self.config) if self._llm else FallbackReflector()
         self._dedup = Deduplicator(self._store, self._embedder, self._llm, self.config)

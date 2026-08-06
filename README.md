@@ -22,7 +22,7 @@ run agent → capture trajectory → detect outcome → reflect on failures
 
 ```bash
 pip install neuraminerl[embeddings]
-export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY — used for reflection
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GEMINI_API_KEY — used for reflection
 ```
 
 ```python
@@ -65,6 +65,59 @@ Storing lessons is the easy part. The hard parts — the parts NeuramineRL owns 
 4. **Zero-config, local-first** — SQLite + local static embeddings. Nothing leaves your machine
    except the reflection call. No telemetry.
 
+## Fitting your stack
+
+**Any LLM provider.** Reflection is one small call off the hot path, so it does not have to match
+whatever model your agent runs on.
+
+```python
+Learner(llm="anthropic:claude-haiku-4-5")
+Learner(llm="gemini:gemini-2.5-flash")
+Learner(llm="openai:gpt-4o-mini")
+Learner(llm="openai:llama-3.1-70b@https://api.groq.com/openai/v1")  # any OpenAI-compatible host
+Learner(llm="openai:qwen2.5@http://localhost:11434/v1")  # local Ollama/vLLM, no key
+```
+
+The `@base_url` suffix points the `openai` provider at anything speaking Chat Completions — Groq,
+Together, Fireworks, DeepSeek, OpenRouter, Azure OpenAI, Ollama, vLLM. Keys are read from
+`NEURAMINERL_API_KEY` first, then the provider's usual variable; a custom `base_url` may be
+keyless. `NEURAMINERL_LLM` sets the same spec by environment. For anything else (Bedrock,
+Vertex AI, Cohere, an in-house gateway), implement the four-argument `LLMClient` protocol and
+pass the instance: `Learner(llm=my_client)`.
+
+**Any database.** SQLite is the zero-config default and assumes one process. For Celery workers,
+multiple containers, or anything else where writers do not share a disk, pass a DSN:
+
+```python
+Learner(store="postgresql://user:pass@host/db")  # pip install neuraminerl[postgres]
+```
+
+`PostgresStore` implements the same 16-method `Store` protocol — JSONB columns, `BYTEA`
+embeddings, numpy cosine search, and no in-process cache, so concurrent workers see each other's
+lessons immediately. pgvector is an optimization for far larger stores, not a requirement.
+Implement `Store` yourself for MySQL, Mongo, or a hosted vector DB.
+
+**Async agents.** `AsyncLearner` mirrors the sync API but offloads every blocking call (store IO
+and the reflection call inside `end()`) to a worker thread, so LangGraph nodes and FastAPI
+handlers never block the event loop:
+
+```python
+from neuraminerl import AsyncLearner
+
+nm = AsyncLearner(scope="checkout-agent")
+async with await nm.run(task="...") as run:
+    prompt = SYSTEM_PROMPT + str(await run.lessons())  # awaitable here, a property on Run
+    await run.end(success=True)
+```
+
+**Your own cost tracking.** `on_usage` fires after every reflection and dedup call:
+
+```python
+Learner(on_usage=lambda e: record_llm_usage(e.model, e.input_tokens, e.output_tokens))
+```
+
+A callback that raises is reported as a warning and never breaks the run.
+
 ## What does it cost in tokens?
 
 Injection is bounded, not cumulative — a sliding window, never a snowball:
@@ -95,7 +148,8 @@ Two tuning notes:
 
 | Call | Purpose |
 | --- | --- |
-| `Learner()` | Zero-config init. `Learner(scope="checkout-agent", llm="anthropic:claude-haiku-4-5", ...)` to customize. |
+| `Learner()` | Zero-config init. `Learner(scope="checkout-agent", llm="anthropic:claude-haiku-4-5", store="postgresql://...", on_usage=...)` to customize. |
+| `AsyncLearner()` | Same API, thread-offloaded for asyncio callers. `await run.lessons()` replaces the property. |
 | `nm.run(task=...)` | Context manager. Yields a `Run`; unhandled exceptions become failures. |
 | `run.lessons` | Recalled lessons for this task; `str()` renders the injectable prompt block. Recall through the run binds lessons for credit assignment. |
 | `run.log(messages)` / `run.log_tool_call(...)` | Best-effort trajectory capture. |
@@ -104,12 +158,14 @@ Two tuning notes:
 | `nm.lessons()` / `nm.forget(lesson_id)` | Audit and control what gets injected. |
 | `nm.stats()` | Baseline success rate, lesson counts by state, cumulative injected-token estimate. |
 
-Every stage is swappable via small Protocols: `Store`, `Embedder`, `LLMClient`,
-`OutcomeDetector`, `Reflector`, `Retriever`, `Injector`.
+The three IO boundaries are small `Protocol`s you can implement yourself and pass to `Learner`:
+`Store` (persistence + vector search), `Embedder` (retrieval vectors), and `LLMClient`
+(reflection). Reflection, retrieval, injection, and the lesson lifecycle are internal classes
+tuned entirely through `LearnerConfig`.
 
 ## Status
 
-Early alpha — API may change before 0.2. See `examples/` for a runnable demo where an agent
+Early alpha — the API may still change. See `examples/` for a runnable demo where an agent
 measurably improves across episodes against an API with undocumented quirks.
 
 ## License

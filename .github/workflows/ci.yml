@@ -18,6 +18,35 @@ jobs:
       - run: ruff format --check .
       - run: mypy
 
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: neuraminerl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NEURAMINERL_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/neuraminerl_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      # The suite self-skips without a DSN, which would make a green run
+      # meaningless here — fail if it is missing instead.
+      - name: require a Postgres DSN
+        run: test -n "$NEURAMINERL_TEST_POSTGRES_DSN"
+      - run: pytest tests/test_store_postgres.py -v
+
   test:
     strategy:
       fail-fast: false
