@@ -7,13 +7,18 @@ every search re-reads the scope's embeddings (capped at ~200 lessons by the
 lifecycle, this stays cheap). Vector search remains numpy brute force;
 pgvector is an optimization for far larger stores, not a requirement.
 
+Connections come from a psycopg pool rather than one long-lived connection:
+a service running for days will eventually see its connection dropped by a
+Postgres restart or a network blip, and the pool reconnects instead of
+failing every subsequent call. It is also thread-safe, so concurrent callers
+(including AsyncLearner's worker threads) do not serialize behind one lock.
+
 Requires the ``postgres`` extra: ``pip install neuraminerl[postgres]``.
 """
 
 from __future__ import annotations
 
 import json
-import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -131,31 +136,53 @@ def _as_json(value: Any) -> Any:
 
 
 class PostgresStore:
-    def __init__(self, dsn: str) -> None:
+    """``Learner(store="postgresql://...")`` builds one of these.
+
+    ``max_size`` bounds connections held per process; the default suits one
+    Celery worker. Each ``pool.connection()`` block is a transaction: it
+    commits on clean exit and rolls back if the body raises.
+    """
+
+    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4) -> None:
         try:
-            import psycopg
             from psycopg.rows import dict_row
             from psycopg.types.json import Jsonb
+            from psycopg_pool import ConnectionPool
         except ImportError as exc:  # pragma: no cover - exercised only without extra
             raise ConfigError(
                 "PostgresStore requires psycopg: pip install neuraminerl[postgres]"
             ) from exc
         self._jsonb = Jsonb
-        self._lock = threading.RLock()
-        self._conn: Any = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
-        with self._lock, self._conn.transaction():
-            self._conn.execute(_SCHEMA)
-            self._conn.execute(
+        self._pool: Any = ConnectionPool(
+            dsn,
+            min_size=min_size,
+            max_size=max_size,
+            kwargs={"row_factory": dict_row},
+            open=True,
+        )
+        with self._pool.connection() as conn:
+            conn.execute(_SCHEMA)
+            conn.execute(
                 "INSERT INTO schema_meta (key, value) VALUES ('version', %s) "
                 "ON CONFLICT (key) DO NOTHING",
                 (str(_SCHEMA_VERSION),),
+            )
+            # Databases written before embedding width was tracked per scope
+            # carry a single global row; hand it to every scope that already
+            # has lessons so the guard keeps holding across the upgrade.
+            conn.execute(
+                """INSERT INTO schema_meta (key, value)
+                   SELECT 'embedding_dim:' || l.scope, m.value
+                     FROM (SELECT DISTINCT scope FROM lessons WHERE embedding IS NOT NULL) l
+                     JOIN schema_meta m ON m.key = 'embedding_dim'
+                   ON CONFLICT (key) DO NOTHING"""
             )
 
     # -- trajectories ------------------------------------------------------
 
     def save_trajectory(self, trajectory: Trajectory) -> None:
-        with self._lock, self._conn.transaction():
-            self._conn.execute(
+        with self._pool.connection() as conn:
+            conn.execute(
                 """INSERT INTO trajectories
                      (id, scope, task, status, started_at, ended_at, metadata)
                    VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -174,8 +201,8 @@ class PostgresStore:
             )
 
     def get_trajectory(self, trajectory_id: str, *, with_steps: bool = True) -> Trajectory:
-        with self._lock:
-            row = self._conn.execute(
+        with self._pool.connection() as conn:
+            row = conn.execute(
                 "SELECT * FROM trajectories WHERE id = %s", (trajectory_id,)
             ).fetchone()
             if row is None:
@@ -190,7 +217,7 @@ class PostgresStore:
                 metadata=_as_json(row["metadata"]),
             )
             if with_steps:
-                step_rows = self._conn.execute(
+                step_rows = conn.execute(
                     "SELECT * FROM steps WHERE trajectory_id = %s ORDER BY idx",
                     (trajectory_id,),
                 ).fetchall()
@@ -212,7 +239,7 @@ class PostgresStore:
     def add_steps(self, steps: Sequence[Step]) -> None:
         if not steps:
             return
-        with self._lock, self._conn.transaction(), self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.executemany(
                 """INSERT INTO steps
                      (id, trajectory_id, idx, kind, content, error, created_at, metadata)
@@ -235,8 +262,8 @@ class PostgresStore:
     # -- outcomes ----------------------------------------------------------
 
     def save_outcome(self, outcome: Outcome) -> None:
-        with self._lock, self._conn.transaction():
-            self._conn.execute(
+        with self._pool.connection() as conn:
+            conn.execute(
                 """INSERT INTO outcomes
                      (id, trajectory_id, status, score, source, detail, created_at)
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
@@ -252,8 +279,8 @@ class PostgresStore:
             )
 
     def latest_outcome(self, trajectory_id: str) -> Outcome | None:
-        with self._lock:
-            row = self._conn.execute(
+        with self._pool.connection() as conn:
+            row = conn.execute(
                 """SELECT * FROM outcomes WHERE trajectory_id = %s
                    ORDER BY created_at DESC, seq DESC LIMIT 1""",
                 (trajectory_id,),
@@ -277,8 +304,8 @@ class PostgresStore:
     def baseline_success_rate(self, scope: str, window: int = 100) -> float:
         """Rolling success rate over the scope's most recent primary outcomes.
         Returns 0.5 until there are at least 5 outcomes."""
-        with self._lock:
-            rows = self._conn.execute(
+        with self._pool.connection() as conn:
+            rows = conn.execute(
                 """SELECT status, score FROM (
                      SELECT DISTINCT ON (o.trajectory_id)
                        o.status, o.score, o.created_at
@@ -306,17 +333,15 @@ class PostgresStore:
     # -- lessons -----------------------------------------------------------
 
     def upsert_lesson(self, lesson: Lesson, embedding: Vector | None = None) -> None:
-        with self._lock, self._conn.transaction():
-            blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
-            existing = self._conn.execute(
-                "SELECT id FROM lessons WHERE id = %s", (lesson.id,)
-            ).fetchone()
+        blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
+        with self._pool.connection() as conn:
+            existing = conn.execute("SELECT id FROM lessons WHERE id = %s", (lesson.id,)).fetchone()
             lesson.updated_at = utcnow()
             if existing is None:
                 if blob is None:
                     raise ConfigError("New lessons must be saved with an embedding")
-                self._check_dim(embedding)
-                self._conn.execute(
+                self._check_dim(conn, embedding, lesson.scope)
+                conn.execute(
                     """INSERT INTO lessons (id, scope, condition, advice, rationale, embedding,
                          state, alpha, beta, times_injected, version, merged_into,
                          source_trajectory_ids, last_injected_at, last_reinforced_at,
@@ -367,29 +392,30 @@ class PostgresStore:
                     lesson.updated_at,
                 ]
                 if blob is not None:
-                    self._check_dim(embedding)
+                    self._check_dim(conn, embedding, lesson.scope)
                     sets += ", embedding=%s"
                     params.append(blob)
                 params.append(lesson.id)
-                self._conn.execute(f"UPDATE lessons SET {sets} WHERE id=%s", params)
+                conn.execute(f"UPDATE lessons SET {sets} WHERE id=%s", params)
 
-    def _check_dim(self, embedding: Vector | None) -> None:
+    def _check_dim(self, conn: Any, embedding: Vector | None, scope: str) -> None:
+        """Embedding width is enforced per scope, not per database: a search
+        only ever stacks one scope's vectors into a matrix, so unrelated
+        agents sharing this database may use different embedders."""
         assert embedding is not None
         dim = int(embedding.shape[-1])
-        row = self._conn.execute(
-            "SELECT value FROM schema_meta WHERE key = 'embedding_dim'"
-        ).fetchone()
+        key = f"embedding_dim:{scope}"
+        row = conn.execute("SELECT value FROM schema_meta WHERE key = %s", (key,)).fetchone()
         if row is None:
-            self._conn.execute(
-                "INSERT INTO schema_meta (key, value) VALUES ('embedding_dim', %s) "
-                "ON CONFLICT (key) DO NOTHING",
-                (str(dim),),
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                (key, str(dim)),
             )
         elif int(row["value"]) != dim:
             raise ConfigError(
-                f"This database stores {row['value']}-dim lesson embeddings but the current "
+                f"Scope '{scope}' stores {row['value']}-dim lesson embeddings but the current "
                 f"embedder produces {dim}-dim vectors. Use the original embedder, or start a "
-                f"new database to re-learn."
+                f"new scope (or database) to re-learn."
             )
 
     @staticmethod
@@ -415,23 +441,23 @@ class PostgresStore:
         )
 
     def get_lesson(self, lesson_id: str) -> Lesson:
-        with self._lock:
-            row = self._conn.execute("SELECT * FROM lessons WHERE id = %s", (lesson_id,)).fetchone()
+        with self._pool.connection() as conn:
+            row = conn.execute("SELECT * FROM lessons WHERE id = %s", (lesson_id,)).fetchone()
         if row is None:
             raise NeuramineRLError(f"Unknown lesson: {lesson_id}")
         return self._lesson_from_row(row)
 
     def get_lessons(self, scope: str, states: Sequence[LessonState]) -> list[Lesson]:
-        with self._lock:
-            rows = self._conn.execute(
+        with self._pool.connection() as conn:
+            rows = conn.execute(
                 "SELECT * FROM lessons WHERE scope = %s AND state = ANY(%s) ORDER BY created_at",
                 (scope, list(states)),
             ).fetchall()
         return [self._lesson_from_row(r) for r in rows]
 
     def count_lessons(self, scope: str, states: Sequence[LessonState]) -> int:
-        with self._lock:
-            row = self._conn.execute(
+        with self._pool.connection() as conn:
+            row = conn.execute(
                 "SELECT COUNT(*) AS n FROM lessons WHERE scope = %s AND state = ANY(%s)",
                 (scope, list(states)),
             ).fetchone()
@@ -440,35 +466,27 @@ class PostgresStore:
     def search_lessons(
         self, query_vec: Vector, scope: str, states: Sequence[LessonState], k: int
     ) -> list[tuple[Lesson, float]]:
-        # No cache: other processes insert lessons concurrently, so re-read
-        # the scope's embeddings every time (bounded by max_lessons).
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT id, state, embedding FROM lessons WHERE scope = %s "
-                "AND state IN ('candidate', 'active') AND embedding IS NOT NULL",
-                (scope,),
+        # Full rows in one query: no cache (other processes insert lessons
+        # concurrently) and no per-hit re-fetch. Bounded by max_lessons.
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM lessons WHERE scope = %s AND state = ANY(%s) "
+                "AND embedding IS NOT NULL",
+                (scope, list(states)),
             ).fetchall()
-        wanted = set(states)
-        ids = [r["id"] for r in rows if r["state"] in wanted]
-        if not ids:
+        if not rows:
             return []
-        matrix = np.vstack(
-            [
-                np.frombuffer(bytes(r["embedding"]), dtype=np.float32)
-                for r in rows
-                if r["state"] in wanted
-            ]
-        )
+        matrix = np.vstack([np.frombuffer(bytes(r["embedding"]), dtype=np.float32) for r in rows])
         sims = matrix @ query_vec.reshape(-1)
         order = np.argsort(-sims)[:k]
-        return [(self.get_lesson(ids[int(pos)]), float(sims[int(pos)])) for pos in order]
+        return [(self._lesson_from_row(rows[int(pos)]), float(sims[int(pos)])) for pos in order]
 
     # -- injections --------------------------------------------------------
 
     def log_injections(self, injections: Sequence[Injection]) -> None:
         if not injections:
             return
-        with self._lock, self._conn.transaction(), self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.executemany(
                 """INSERT INTO injections (id, trajectory_id, lesson_id, lesson_version,
                      retrieval_score, rank, credited, credited_alpha, credited_beta, created_at)
@@ -491,8 +509,8 @@ class PostgresStore:
             )
 
     def injections_for(self, trajectory_id: str) -> list[Injection]:
-        with self._lock:
-            rows = self._conn.execute(
+        with self._pool.connection() as conn:
+            rows = conn.execute(
                 "SELECT * FROM injections WHERE trajectory_id = %s ORDER BY rank",
                 (trajectory_id,),
             ).fetchall()
@@ -513,8 +531,8 @@ class PostgresStore:
         ]
 
     def update_injection(self, injection: Injection) -> None:
-        with self._lock, self._conn.transaction():
-            self._conn.execute(
+        with self._pool.connection() as conn:
+            conn.execute(
                 """UPDATE injections SET credited=%s, credited_alpha=%s, credited_beta=%s
                    WHERE id=%s""",
                 (
@@ -528,13 +546,12 @@ class PostgresStore:
     # -- audit -------------------------------------------------------------
 
     def log_event(self, lesson_id: str, event: str, detail: str = "") -> None:
-        with self._lock, self._conn.transaction():
-            self._conn.execute(
+        with self._pool.connection() as conn:
+            conn.execute(
                 "INSERT INTO lesson_events (id, lesson_id, event, detail, created_at) "
                 "VALUES (%s, %s, %s, %s, %s)",
                 (new_id(), lesson_id, event, detail, utcnow()),
             )
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        self._pool.close()

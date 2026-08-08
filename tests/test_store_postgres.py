@@ -94,6 +94,25 @@ def test_lesson_upsert_search_and_injections(store) -> None:  # type: ignore[no-
     assert store.injections_for(trajectory.id)[0].credited
 
 
+def test_embedding_dim_is_per_scope(store) -> None:  # type: ignore[no-untyped-def]
+    """The shared-database case Postgres exists for: two agents, two
+    embedders, one database."""
+    a, b = f"t-{new_id()}", f"t-{new_id()}"
+    wide = Lesson(scope=a, condition="c", advice="a")
+    store.upsert_lesson(wide, embedding=_vec(1, dim=32))
+    narrow = Lesson(scope=b, condition="c", advice="a")
+    store.upsert_lesson(narrow, embedding=_vec(1, dim=8))
+
+    assert store.search_lessons(_vec(1, dim=32), a, ("candidate",), k=5)
+    assert store.search_lessons(_vec(1, dim=8), b, ("candidate",), k=5)
+
+    from neuraminerl.exceptions import ConfigError
+
+    clash = Lesson(scope=a, condition="c2", advice="a2")
+    with pytest.raises(ConfigError):
+        store.upsert_lesson(clash, embedding=_vec(2, dim=8))
+
+
 def test_baseline_success_rate(store) -> None:  # type: ignore[no-untyped-def]
     scope = f"t-{new_id()}"
     assert store.baseline_success_rate(scope) == 0.5  # < 5 outcomes

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from neuraminerl.embeddings.hashed import HashedEmbedder
@@ -69,6 +71,45 @@ def test_embedding_dim_mismatch_rejected(store: SqliteStore, emb: HashedEmbedder
     l2 = _lesson(emb, "cond2", "advice2")
     with pytest.raises(ConfigError):
         store.upsert_lesson(l2, embedding=other.embed([l2.text])[0])
+
+
+def test_embedding_dim_is_per_scope(store: SqliteStore, emb: HashedEmbedder) -> None:
+    """One database, two agents, different embedders. Searches never stack
+    vectors across scopes, so this must be allowed."""
+    wide = _lesson(emb, "cond", "advice")
+    store.upsert_lesson(wide, embedding=emb.embed([wide.text])[0])
+
+    narrow_emb = HashedEmbedder(dim=64)
+    narrow = Lesson(scope="other-agent", condition="cond", advice="advice")
+    store.upsert_lesson(narrow, embedding=narrow_emb.embed([narrow.text])[0])
+
+    assert store.search_lessons(emb.embed(["cond"])[0], "default", ("candidate",), k=5)
+    assert store.search_lessons(narrow_emb.embed(["cond"])[0], "other-agent", ("candidate",), k=5)
+
+
+def test_legacy_global_dim_still_guards_after_upgrade(tmp_path: Path, emb: HashedEmbedder) -> None:
+    """A 0.1.x database keyed embedding width globally. After upgrading, the
+    existing scope must keep its constraint rather than silently accepting a
+    second width that would break its search matrix."""
+    path = tmp_path / "legacy.db"
+    store = SqliteStore(path)
+    lesson = _lesson(emb, "cond", "advice")
+    store.upsert_lesson(lesson, embedding=emb.embed([lesson.text])[0])
+    # Rewrite the metadata the way 0.1.x did: one global row, no scope key.
+    store._conn.execute("DELETE FROM schema_meta WHERE key LIKE 'embedding_dim:%'")
+    store._conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('embedding_dim', ?)",
+        (str(emb.embed(["x"])[0].shape[-1]),),
+    )
+    store._conn.commit()
+    store.close()
+
+    upgraded = SqliteStore(path)  # migration runs here
+    other = HashedEmbedder(dim=64)
+    clash = _lesson(emb, "cond2", "advice2")
+    with pytest.raises(ConfigError):
+        upgraded.upsert_lesson(clash, embedding=other.embed([clash.text])[0])
+    upgraded.close()
 
 
 def test_update_preserves_embedding(store: SqliteStore, emb: HashedEmbedder) -> None:

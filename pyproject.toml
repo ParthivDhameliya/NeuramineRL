@@ -38,7 +38,7 @@ dependencies = [
 
 [project.optional-dependencies]
 embeddings = ["model2vec>=0.3"]
-postgres = ["psycopg[binary]>=3.1"]
+postgres = ["psycopg[binary,pool]>=3.1"]
 all = ["neuraminerl[embeddings,postgres]"]
 dev = [
     "neuraminerl[embeddings,postgres]",

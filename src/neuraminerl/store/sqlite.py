@@ -134,6 +134,15 @@ class SqliteStore:
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', ?)",
             (str(_SCHEMA_VERSION),),
         )
+        # Databases written before embedding width was tracked per scope carry
+        # a single global row; hand it to every scope that already has lessons
+        # so the guard keeps holding across the upgrade.
+        self._conn.execute(
+            """INSERT OR IGNORE INTO schema_meta (key, value)
+               SELECT 'embedding_dim:' || l.scope, m.value
+                 FROM (SELECT DISTINCT scope FROM lessons WHERE embedding IS NOT NULL) l
+                 JOIN schema_meta m ON m.key = 'embedding_dim'"""
+        )
         self._conn.commit()
         # scope -> (lesson_ids, states, matrix) over non-retired lessons
         self._matrix_cache: dict[str, tuple[list[str], list[str], Vector]] = {}
@@ -302,7 +311,7 @@ class SqliteStore:
             if existing is None:
                 if blob is None:
                     raise ConfigError("New lessons must be saved with an embedding")
-                self._check_dim(embedding)
+                self._check_dim(embedding, lesson.scope)
                 self._conn.execute(
                     """INSERT INTO lessons (id, scope, condition, advice, rationale, embedding,
                          state, alpha, beta, times_injected, version, merged_into,
@@ -352,7 +361,7 @@ class SqliteStore:
                     lesson.updated_at,
                 ]
                 if blob is not None:
-                    self._check_dim(embedding)
+                    self._check_dim(embedding, lesson.scope)
                     sets += ", embedding=?"
                     params.append(blob)
                 params.append(lesson.id)
@@ -360,21 +369,23 @@ class SqliteStore:
             self._conn.commit()
             self._matrix_cache.pop(lesson.scope, None)
 
-    def _check_dim(self, embedding: Vector | None) -> None:
+    def _check_dim(self, embedding: Vector | None, scope: str) -> None:
+        """Embedding width is enforced per scope, not per database: a search
+        only ever stacks one scope's vectors into a matrix, so unrelated
+        scopes may use different embedders in the same database."""
         assert embedding is not None
         dim = int(embedding.shape[-1])
-        row = self._conn.execute(
-            "SELECT value FROM schema_meta WHERE key = 'embedding_dim'"
-        ).fetchone()
+        key = f"embedding_dim:{scope}"
+        row = self._conn.execute("SELECT value FROM schema_meta WHERE key = ?", (key,)).fetchone()
         if row is None:
             self._conn.execute(
-                "INSERT INTO schema_meta (key, value) VALUES ('embedding_dim', ?)", (str(dim),)
+                "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)", (key, str(dim))
             )
         elif int(row["value"]) != dim:
             raise ConfigError(
-                f"This database stores {row['value']}-dim lesson embeddings but the current "
+                f"Scope '{scope}' stores {row['value']}-dim lesson embeddings but the current "
                 f"embedder produces {dim}-dim vectors. Use the original embedder, or start a "
-                f"new database (delete the .neuraminerl directory) to re-learn."
+                f"new scope (or database) to re-learn."
             )
 
     @staticmethod

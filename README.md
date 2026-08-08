@@ -81,7 +81,9 @@ Learner(llm="openai:qwen2.5@http://localhost:11434/v1")  # local Ollama/vLLM, no
 The `@base_url` suffix points the `openai` provider at anything speaking Chat Completions — Groq,
 Together, Fireworks, DeepSeek, OpenRouter, Azure OpenAI, Ollama, vLLM. Keys are read from
 `NEURAMINERL_API_KEY` first, then the provider's usual variable; a custom `base_url` may be
-keyless. `NEURAMINERL_LLM` sets the same spec by environment. For anything else (Bedrock,
+keyless. With no `llm=` argument, the provider is detected from whichever key is present, in the
+order Anthropic, OpenAI, Gemini. `NEURAMINERL_LLM` sets the same spec by environment. For
+anything else (Bedrock,
 Vertex AI, Cohere, an in-house gateway), implement the four-argument `LLMClient` protocol and
 pass the instance: `Learner(llm=my_client)`.
 
@@ -94,8 +96,13 @@ Learner(store="postgresql://user:pass@host/db")  # pip install neuraminerl[postg
 
 `PostgresStore` implements the same 16-method `Store` protocol — JSONB columns, `BYTEA`
 embeddings, numpy cosine search, and no in-process cache, so concurrent workers see each other's
-lessons immediately. pgvector is an optimization for far larger stores, not a requirement.
-Implement `Store` yourself for MySQL, Mongo, or a hosted vector DB.
+lessons immediately. It pools connections, so a Postgres restart or network blip reconnects
+instead of breaking the process. pgvector is an optimization for far larger stores, not a
+requirement. Implement `Store` yourself for MySQL, Mongo, or a hosted vector DB.
+
+Embedding width is enforced per scope rather than per database, so agents sharing one Postgres
+may use different embedders — a worker without `model2vec` falling back to the hashed embedder
+cannot lock the others out.
 
 **Async agents.** `AsyncLearner` mirrors the sync API but offloads every blocking call (store IO
 and the reflection call inside `end()`) to a worker thread, so LangGraph nodes and FastAPI
