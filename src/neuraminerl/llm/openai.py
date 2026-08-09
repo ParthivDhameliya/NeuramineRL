@@ -31,14 +31,17 @@ class OpenAIClient:
         timeout: float = 60.0,
     ) -> None:
         self.model = model
-        self._api_key = (
-            api_key or os.environ.get("NEURAMINERL_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-        )
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
-        # A custom base_url may be a local/keyless server (Ollama, vLLM).
+        # OPENAI_API_KEY authenticates to OpenAI and nowhere else. A custom
+        # base_url is a different operator's server, so the provider key is
+        # never forwarded to it: pass api_key=, or set NEURAMINERL_API_KEY.
+        # A custom base_url may also be a local keyless server (Ollama, vLLM).
+        self._api_key = api_key or os.environ.get("NEURAMINERL_API_KEY", "")
         if not self._api_key and self._base_url == DEFAULT_BASE_URL:
-            raise LLMError("No OpenAI API key (set OPENAI_API_KEY)")
+            self._api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not self._api_key:
+                raise LLMError("No OpenAI API key (set OPENAI_API_KEY)")
 
     def complete(
         self,
@@ -81,7 +84,17 @@ class OpenAIClient:
             raise LLMError(f"OpenAI API request failed: {exc}") from exc
 
         payload = response.json()
-        text = payload["choices"][0]["message"].get("content") or ""
+        # Gateways (OpenRouter, Azure, local servers) return 200 with an error
+        # body or an empty choices list; index blindly and callers get a bare
+        # KeyError instead of this adapter's own error type.
+        choices = payload.get("choices") or []
+        if not choices:
+            raise LLMError(f"OpenAI response contained no choices: {str(payload)[:500]}")
+        message = choices[0].get("message") or {}
+        refusal = message.get("refusal")
+        if refusal:
+            raise LLMError(f"OpenAI refused the request: {str(refusal)[:500]}")
+        text = message.get("content") or ""
         data: dict[str, Any] | None = None
         if json_schema is not None and text:
             try:

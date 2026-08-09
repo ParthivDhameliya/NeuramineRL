@@ -29,6 +29,14 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Hard caps on lesson text, applied wherever a lesson is written — including
+# the merge path, where the model rewrites both fields. An oversized lesson is
+# silently un-injectable (it never fits the injector's budget) yet accrues no
+# evidence, so it can never be retired either.
+MAX_ADVICE_CHARS = 240
+MAX_CONDITION_CHARS = 160
+
+
 @dataclass
 class Trajectory:
     scope: str

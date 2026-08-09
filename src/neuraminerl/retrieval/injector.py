@@ -9,8 +9,22 @@ PREAMBLE = (
 )
 
 
+OPEN_TAG = "<learned_lessons>"
+CLOSE_TAG = "</learned_lessons>"
+
+
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
+
+
+def _neutralize(text: str) -> str:
+    """Strip the block's own delimiters out of lesson text.
+
+    Lesson text is model-written from an untrusted transcript, so it can
+    contain the closing tag. Rendered verbatim it would end the data block
+    early and the remainder would read as top-level prompt instructions.
+    """
+    return text.replace(CLOSE_TAG, "").replace(OPEN_TAG, "")
 
 
 class Injector:
@@ -26,19 +40,23 @@ class Injector:
         if not lessons:
             return "", []
         budget = self._config.token_budget
-        frame = f"<learned_lessons>\n{PREAMBLE}\n</learned_lessons>"
-        used = estimate_tokens(frame)
         lines: list[str] = []
         included: list[Lesson] = []
         for lesson in lessons:
-            line = f"{len(lines) + 1}. {lesson.text}"
-            cost = estimate_tokens(line)
-            if used + cost > budget:
+            line = f"{len(lines) + 1}. {_neutralize(lesson.text)}"
+            # Cost the assembled block, not the pieces: estimate_tokens floors,
+            # so summing per-part costs drops each part's remainder and every
+            # joining newline, letting the rendered block exceed the budget the
+            # README calls a hard cap.
+            if estimate_tokens(self._assemble([*lines, line])) > budget:
                 continue
-            used += cost
             lines.append(line)
             included.append(lesson)
         if not lines:
             return "", []
+        return self._assemble(lines), included
+
+    @staticmethod
+    def _assemble(lines: list[str]) -> str:
         body = "\n".join(lines)
-        return f"<learned_lessons>\n{PREAMBLE}\n{body}\n</learned_lessons>", included
+        return f"{OPEN_TAG}\n{PREAMBLE}\n{body}\n{CLOSE_TAG}"

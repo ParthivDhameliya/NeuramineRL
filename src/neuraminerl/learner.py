@@ -65,6 +65,10 @@ class Learner:
         self.config = replace(base, **overrides) if overrides else base
         self.scope = scope
 
+        # Only close what we opened: a Store instance passed in may be shared
+        # by several Learners (one per scope), and closing it from one would
+        # break the others.
+        self._owns_store = store is None or isinstance(store, (str, Path))
         if store is None:
             self._store: Store = SqliteStore(self.config.home / "neuraminerl.db")
         elif isinstance(store, str) and store.startswith(("postgres://", "postgresql://")):
@@ -150,12 +154,12 @@ class Learner:
             trajectory_id=run_id,
             status="success" if success else "failure",
             source="user_correction",
-            detail=note,
+            detail=note[: self.config.max_step_chars],
         )
         self._store.save_outcome(outcome)
         self._lifecycle.credit(outcome)
         if not success and self.config.reflect == "sync":
-            self._reflect(trajectory, outcome)
+            self._reflect_safely(trajectory, outcome)
         self._lifecycle.maintain(self.scope)
 
     def learn(self, run_id: str) -> list[Lesson]:
@@ -199,7 +203,10 @@ class Learner:
         )
 
     def close(self) -> None:
-        self._store.close()
+        """Close the store, unless it was supplied by the caller — a shared
+        Store outlives any one Learner and is the caller's to close."""
+        if self._owns_store:
+            self._store.close()
 
     # -- internals (called by Run) ---------------------------------------------
 
@@ -247,13 +254,31 @@ class Learner:
         trajectory.ended_at = utcnow()
         self._store.save_trajectory(trajectory)
         outcome = Outcome(
-            trajectory_id=trajectory.id, status=status, score=score, source=source, detail=detail
+            trajectory_id=trajectory.id,
+            status=status,
+            score=score,
+            source=source,
+            detail=detail[: self.config.max_step_chars],
         )
         self._store.save_outcome(outcome)
         self._lifecycle.credit(outcome)
         if status == "failure" and self.config.reflect == "sync":
-            self._reflect(trajectory, outcome)
+            self._reflect_safely(trajectory, outcome)
         self._lifecycle.maintain(self.scope)
+
+    def _reflect_safely(self, trajectory: Trajectory, outcome: Outcome) -> None:
+        """Reflection runs while the caller's run is unwinding — often inside
+        ``Run.__exit__``, where a raise would replace the agent's own exception
+        with ours and skip lifecycle maintenance. The outcome and its credit
+        are already persisted by this point, so a provider error costs one
+        lesson, not the caller's error. ``learn()`` still raises: it is an
+        explicit user-initiated call."""
+        try:
+            self._reflect(trajectory, outcome)
+        except Exception as exc:  # a bookkeeping failure must not break the run
+            warnings.warn(
+                f"Reflection failed; no lesson recorded for this run: {exc!r}", stacklevel=2
+            )
 
     def _reflect(self, trajectory: Trajectory, outcome: Outcome) -> list[Lesson]:
         if not trajectory.steps:

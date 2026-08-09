@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import traceback
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
@@ -72,6 +73,11 @@ class Run:
         self._step_index = 0
         self._lessons: RecallResult | None = None
         self._ended = False
+        # AsyncRun runs this object's methods in worker threads, so the
+        # recall memoization below needs real mutual exclusion: two concurrent
+        # first-accesses would each bind the run, logging duplicate injections
+        # and crediting one run's outcome twice.
+        self._lock = threading.Lock()
 
     @property
     def id(self) -> str:
@@ -86,7 +92,9 @@ class Run:
         """Recalled lessons for this task. First access performs retrieval and
         binds the injected lessons to this run for credit assignment."""
         if self._lessons is None:
-            self._lessons = self._learner._recall_for_run(self._trajectory)
+            with self._lock:
+                if self._lessons is None:
+                    self._lessons = self._learner._recall_for_run(self._trajectory)
         return self._lessons
 
     # -- capture -----------------------------------------------------------
@@ -147,10 +155,18 @@ class Run:
         detail: str = "",
     ) -> None:
         """Record the outcome. On failure (and reflect="sync") this triggers
-        one reflection LLM call — after the run, never on the hot path."""
-        if self._ended:
-            return
-        self._ended = True
+        one reflection LLM call — after the run, never on the hot path.
+
+        Passing ``error`` without ``success`` means failure: reporting an error
+        and having it recorded as an outcome that teaches nothing would be a
+        silent no-op. ``detail`` alone stays neutral.
+        """
+        with self._lock:
+            if self._ended:
+                return
+            self._ended = True
+        if success is None and error:
+            success = False
         self._learner._finish(
             self._trajectory,
             success=success,
@@ -168,8 +184,10 @@ class Run:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> Literal[False]:
-        if exc is not None and not self._ended:
+        with self._lock:
+            already_ended = self._ended
             self._ended = True
+        if exc is not None and not already_ended:
             self._learner._finish(
                 self._trajectory,
                 success=False,
@@ -177,7 +195,7 @@ class Run:
                 detail="".join(traceback.format_exception(exc_type, exc, tb))[-4000:],
                 source="exception",
             )
-        elif not self._ended:
+        elif not already_ended:
             # Exited without end(): nothing to learn from, but don't lose the trace.
             self._trajectory.status = "abandoned"
             self._trajectory.ended_at = utcnow()

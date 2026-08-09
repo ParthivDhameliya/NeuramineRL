@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import warnings
+
 from ..config import LearnerConfig
 from ..llm.base import LLMClient
-from ..models import LessonDraft, Outcome, Trajectory
+from ..models import MAX_ADVICE_CHARS, MAX_CONDITION_CHARS, LessonDraft, Outcome, Trajectory
 from .prompts import REFLECTION_SCHEMA, REFLECTION_SYSTEM
 
-_MAX_ADVICE_CHARS = 240  # hard cap even if the model ignores the prompt
+_MAX_DETAIL_CHARS = 2000  # outcome.detail is caller-supplied and unbounded
 
 
 def render_transcript(trajectory: Trajectory, char_budget: int = 8000) -> str:
@@ -19,10 +21,16 @@ def render_transcript(trajectory: Trajectory, char_budget: int = 8000) -> str:
             body = f"{body}\nERROR: {step.error}" if body else f"ERROR: {step.error}"
         lines.append(f"{prefix} {body}")
     text = "\n".join(lines)
+    if char_budget <= 0:
+        return ""
     if len(text) <= char_budget:
         return text
-    head = text[: char_budget // 3]
-    tail = text[-(char_budget - char_budget // 3) :]
+    head_len = char_budget // 3
+    tail_len = max(0, char_budget - head_len)
+    head = text[:head_len]
+    # Slice from the front: text[-0:] is text[0:], which would return the whole
+    # transcript for a zero-length tail — the opposite of truncating it.
+    tail = text[len(text) - tail_len :] if tail_len else ""
     return f"{head}\n[... transcript truncated ...]\n{tail}"
 
 
@@ -33,10 +41,13 @@ class LLMReflector:
 
     def reflect(self, trajectory: Trajectory, outcome: Outcome) -> list[LessonDraft]:
         transcript = render_transcript(trajectory, self._config.transcript_char_budget)
+        # detail carries whatever the caller passed to end(error=...) — often a
+        # whole HTTP error body. Bound it too, or the budget above buys nothing.
+        detail = (outcome.detail or "(none)")[-_MAX_DETAIL_CHARS:]
         user = (
             f"{transcript}\n\n"
             f"OUTCOME: {outcome.status} (source: {outcome.source})\n"
-            f"DETAIL: {outcome.detail or '(none)'}"
+            f"DETAIL: {detail}"
         )
         response = self._llm.complete(
             [{"role": "user", "content": user}],
@@ -44,10 +55,20 @@ class LLMReflector:
             json_schema=REFLECTION_SCHEMA,
             max_tokens=1024,
         )
+        if response.data is None:
+            # A refusal, a content filter, or a max_tokens truncation returns
+            # no structured object. Staying silent here is indistinguishable
+            # from "this failure taught nothing", which is a very different
+            # thing to tell a user who just paid for the call.
+            warnings.warn(
+                "Reflection returned no structured output (refusal, truncation, or filter); "
+                "no lessons recorded for this failure.",
+                stacklevel=2,
+            )
         drafts: list[LessonDraft] = []
         for item in (response.data or {}).get("lessons", []):
-            condition = str(item.get("condition", "")).strip()
-            advice = str(item.get("advice", "")).strip()[:_MAX_ADVICE_CHARS]
+            condition = str(item.get("condition", "")).strip()[:MAX_CONDITION_CHARS]
+            advice = str(item.get("advice", "")).strip()[:MAX_ADVICE_CHARS]
             if not condition or not advice:
                 continue
             drafts.append(

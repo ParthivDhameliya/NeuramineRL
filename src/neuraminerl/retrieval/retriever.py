@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..config import LearnerConfig
 from ..embeddings.base import Embedder
-from ..lessons.scoring import beta_lower_bound, beta_mean
+from ..lessons.scoring import beta_lower_bound, beta_mean, evidence_trials
 from ..models import Lesson
 from ..store.base import Store
 
@@ -40,7 +40,11 @@ class Retriever:
             # The gate uses the mean and only applies once a lesson has had
             # its exploration chances — the same condition the lifecycle uses
             # to retire, so nothing gets stuck un-injectable but un-retirable.
-            if lesson.times_injected >= cfg.retire_candidate_min_injections and mean < gate:
+            # Like the lifecycle, it counts credited evidence rather than
+            # exposure, so unfinished runs cannot gate a lesson out.
+            if evidence_trials(
+                lesson.alpha, lesson.beta
+            ) >= cfg.retire_candidate_min_injections and (mean < gate):
                 continue
             if lesson.state == "active":
                 actives.append((lesson, similarity * (0.5 + lower)))
@@ -50,8 +54,12 @@ class Retriever:
         actives.sort(key=lambda pair: -pair[1])
         candidates.sort(key=lambda pair: -pair[1])
 
-        reserved = 1 if candidates else 0
+        # Hold a slot for exploration only when it can actually be filled and
+        # is not the only slot there is. Reserving unconditionally silently
+        # returned k-1 lessons whenever candidate_quota was 0, and at k=1 gave
+        # the single slot to a candidate forever, starving every active lesson.
+        reserved = 1 if (candidates and cfg.candidate_quota > 0 and cfg.k > 1) else 0
         chosen = actives[: max(cfg.k - reserved, 0)]
         remaining = cfg.k - len(chosen)
-        chosen += candidates[: min(cfg.candidate_quota, remaining)]
+        chosen += candidates[: min(cfg.candidate_quota, max(remaining, 0))]
         return chosen

@@ -16,6 +16,19 @@ def beta_mean(alpha: float, beta: float) -> float:
     return alpha / (alpha + beta)
 
 
+def evidence_trials(alpha: float, beta: float) -> float:
+    """Credited outcomes behind this evidence, decayed.
+
+    Every credited outcome adds exactly 1.0 across alpha+beta (success 1/0,
+    failure 0/1, partial score/1-score), starting from the Beta(1,1) prior, and
+    ``decay`` shrinks the excess over that prior. So this is the trial count
+    lifecycle decisions should use. ``times_injected`` counts *exposure* and is
+    incremented at retrieval time, before any outcome exists — gating on it
+    retires lessons for runs that were abandoned or ended without a verdict.
+    """
+    return max(0.0, alpha + beta - 2.0)
+
+
 def beta_lower_bound(alpha: float, beta: float, z: float = 1.0) -> float:
     """Normal approximation of a lower quantile of Beta(alpha, beta):
     mean minus z standard deviations. z=1.0 is roughly the 16th percentile."""

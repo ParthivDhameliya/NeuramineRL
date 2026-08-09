@@ -45,17 +45,17 @@ class GeminiClient:
         timeout: float = 60.0,
     ) -> None:
         self.model = model
-        self._api_key = (
-            api_key
-            or os.environ.get("NEURAMINERL_API_KEY")
-            or os.environ.get("GEMINI_API_KEY")
-            or os.environ.get("GOOGLE_API_KEY", "")
-        )
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
-        # A custom base_url may be a local/keyless Gemini-compatible proxy.
+        # GEMINI_API_KEY/GOOGLE_API_KEY authenticate to Google and nowhere
+        # else. A custom base_url is a different operator's server, so the
+        # provider key is never forwarded to it: pass api_key=, or set
+        # NEURAMINERL_API_KEY. It may also be a local keyless proxy.
+        self._api_key = api_key or os.environ.get("NEURAMINERL_API_KEY", "")
         if not self._api_key and self._base_url == DEFAULT_BASE_URL:
-            raise LLMError("No Gemini API key (set GEMINI_API_KEY or GOOGLE_API_KEY)")
+            self._api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+            if not self._api_key:
+                raise LLMError("No Gemini API key (set GEMINI_API_KEY or GOOGLE_API_KEY)")
 
     def complete(
         self,
@@ -119,6 +119,9 @@ class GeminiClient:
             data=data,
             usage={
                 "input_tokens": int(usage_meta.get("promptTokenCount", 0)),
-                "output_tokens": int(usage_meta.get("candidatesTokenCount", 0)),
+                # 2.5-series models report reasoning separately and bill it as
+                # output; omitting it under-reports spend to on_usage.
+                "output_tokens": int(usage_meta.get("candidatesTokenCount", 0))
+                + int(usage_meta.get("thoughtsTokenCount", 0)),
             },
         )

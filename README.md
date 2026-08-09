@@ -81,9 +81,11 @@ Learner(llm="openai:qwen2.5@http://localhost:11434/v1")  # local Ollama/vLLM, no
 The `@base_url` suffix points the `openai` provider at anything speaking Chat Completions — Groq,
 Together, Fireworks, DeepSeek, OpenRouter, Azure OpenAI, Ollama, vLLM. Keys are read from
 `NEURAMINERL_API_KEY` first, then the provider's usual variable; a custom `base_url` may be
-keyless. With no `llm=` argument, the provider is detected from whichever key is present, in the
-order Anthropic, OpenAI, Gemini. `NEURAMINERL_LLM` sets the same spec by environment. For
-anything else (Bedrock,
+keyless. Authenticate to a custom host with `NEURAMINERL_API_KEY` or `api_key=`: a provider's own
+variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) is used **only** for that
+provider's official endpoint and is never forwarded to another operator's server. With no `llm=`
+argument, the provider is detected from whichever key is present, in the order Anthropic, OpenAI,
+Gemini. `NEURAMINERL_LLM` sets the same spec by environment. For anything else (Bedrock,
 Vertex AI, Cohere, an in-house gateway), implement the four-argument `LLMClient` protocol and
 pass the instance: `Learner(llm=my_client)`.
 
@@ -160,7 +162,7 @@ Two tuning notes:
 | `nm.run(task=...)` | Context manager. Yields a `Run`; unhandled exceptions become failures. |
 | `run.lessons` | Recalled lessons for this task; `str()` renders the injectable prompt block. Recall through the run binds lessons for credit assignment. |
 | `run.log(messages)` / `run.log_tool_call(...)` | Best-effort trajectory capture. |
-| `run.end(success=..., error=..., score=...)` | Record the outcome; triggers reflection on failure. |
+| `run.end(success=..., error=..., score=...)` | Record the outcome; triggers reflection on failure. Passing `error=` without `success=` counts as a failure. |
 | `nm.feedback(run_id, note, success=...)` | Delayed outcome ("user said this was wrong two hours later"). |
 | `nm.lessons()` / `nm.forget(lesson_id)` | Audit and control what gets injected. |
 | `nm.stats()` | Baseline success rate, lesson counts by state, cumulative injected-token estimate. |

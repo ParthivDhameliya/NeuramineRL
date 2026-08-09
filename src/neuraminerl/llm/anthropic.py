@@ -27,16 +27,17 @@ class AnthropicClient:
         timeout: float = 60.0,
     ) -> None:
         self.model = model
-        self._api_key = (
-            api_key
-            or os.environ.get("NEURAMINERL_API_KEY")
-            or os.environ.get("ANTHROPIC_API_KEY", "")
-        )
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
-        # A custom base_url may be a local/keyless Anthropic-compatible server.
+        # ANTHROPIC_API_KEY authenticates to Anthropic and nowhere else. A
+        # custom base_url is a different operator's server, so the provider
+        # key is never forwarded to it: pass api_key=, or set
+        # NEURAMINERL_API_KEY. It may also be a local keyless server.
+        self._api_key = api_key or os.environ.get("NEURAMINERL_API_KEY", "")
         if not self._api_key and self._base_url == DEFAULT_BASE_URL:
-            raise LLMError("No Anthropic API key (set ANTHROPIC_API_KEY)")
+            self._api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not self._api_key:
+                raise LLMError("No Anthropic API key (set ANTHROPIC_API_KEY)")
 
     def complete(
         self,

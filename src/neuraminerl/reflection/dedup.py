@@ -13,7 +13,7 @@ from __future__ import annotations
 from ..config import LearnerConfig
 from ..embeddings.base import Embedder, Vector
 from ..llm.base import LLMClient
-from ..models import Lesson, LessonDraft, utcnow
+from ..models import MAX_ADVICE_CHARS, MAX_CONDITION_CHARS, Lesson, LessonDraft, utcnow
 from ..store.base import Store
 from .prompts import MERGE_SCHEMA, MERGE_SYSTEM
 
@@ -83,8 +83,8 @@ class Deduplicator:
         if decision == "duplicate":
             return self._reinforce(existing, trajectory_id)
         if decision == "generalize" and data.get("condition") and data.get("advice"):
-            existing.condition = str(data["condition"]).strip()
-            existing.advice = str(data["advice"]).strip()
+            existing.condition = str(data["condition"]).strip()[:MAX_CONDITION_CHARS]
+            existing.advice = str(data["advice"]).strip()[:MAX_ADVICE_CHARS]
             existing.version += 1
             if trajectory_id not in existing.source_trajectory_ids:
                 existing.source_trajectory_ids.append(trajectory_id)

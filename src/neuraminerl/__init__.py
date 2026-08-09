@@ -8,7 +8,7 @@ from .llm.base import UsageEvent
 from .models import Injection, Lesson, LessonDraft, Outcome, Step, Trajectory
 from .run import RecallResult, Run
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "AsyncLearner",

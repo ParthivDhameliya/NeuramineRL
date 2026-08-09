@@ -15,7 +15,7 @@ from __future__ import annotations
 from ..config import LearnerConfig
 from ..models import Lesson, LessonState, Outcome, utcnow
 from ..store.base import Store
-from .scoring import beta_lower_bound, beta_mean, days_between, decay
+from .scoring import beta_lower_bound, beta_mean, days_between, decay, evidence_trials
 
 
 class Lifecycle:
@@ -80,6 +80,11 @@ class Lifecycle:
 
             lower = beta_lower_bound(lesson.alpha, lesson.beta, cfg.z)
             mean = beta_mean(lesson.alpha, lesson.beta)
+            # Trials are counted from credited evidence, never from
+            # times_injected: a run that is abandoned or ends without a verdict
+            # bumps times_injected but records no outcome, and gating on it
+            # retired healthy lessons at the 0.5 prior having never been blamed.
+            trials = evidence_trials(lesson.alpha, lesson.beta)
 
             # Asymmetry, on purpose: PROMOTE on the pessimistic lower bound,
             # RETIRE only when even the central estimate (mean) is clearly
@@ -92,17 +97,17 @@ class Lifecycle:
             # (mirroring the retriever): when the agent fails most runs
             # anyway, blame is not evidence a lesson is harmful.
             gate = min(cfg.min_confidence, max(0.0, baseline - cfg.retire_margin))
-            if mean < gate and lesson.times_injected >= cfg.retire_candidate_min_injections:
+            if mean < gate and trials >= cfg.retire_candidate_min_injections:
                 self._transition(
                     lesson, "retired", f"mean {mean:.2f} below injection gate {gate:.2f}"
                 )
                 continue
 
             if lesson.state == "candidate":
-                if lesson.times_injected >= cfg.promote_min_injections and lower >= baseline:
+                if trials >= cfg.promote_min_injections and lower >= baseline:
                     self._transition(lesson, "active", f"LB {lower:.2f} >= baseline {baseline:.2f}")
                 elif (
-                    lesson.times_injected >= cfg.retire_candidate_min_injections
+                    trials >= cfg.retire_candidate_min_injections
                     and mean < baseline - cfg.retire_margin
                 ):
                     self._transition(
@@ -115,7 +120,7 @@ class Lifecycle:
                     and mean < baseline
                 )
                 underperforming = (
-                    lesson.times_injected >= cfg.retire_active_min_injections
+                    trials >= cfg.retire_active_min_injections
                     and mean < baseline - cfg.retire_margin
                 )
                 if underperforming or stale:
