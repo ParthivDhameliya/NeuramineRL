@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ..embeddings.base import Vector
+from ..exceptions import ConfigError
 from ..models import Injection, Lesson, LessonState, Outcome, Step, Trajectory
+
+
+def check_query_dim(matrix: Any, query_vec: Vector, scope: str) -> None:
+    """Raise an actionable error before numpy does an unreadable one.
+
+    The write-time guard cannot catch this on its own: retrieval happens before
+    the first write of a run, so a mismatched embedder surfaces here first, as
+    ``matmul: Input operand 1 has a mismatch in its core dimension``.
+    """
+    if getattr(matrix, "size", 0) and matrix.shape[1] != query_vec.shape[-1]:
+        raise ConfigError(
+            f"Scope '{scope}' stores {matrix.shape[1]}-dim lesson embeddings but the current "
+            f"embedder produces {query_vec.shape[-1]}-dim vectors. Use the embedder this scope "
+            f"was built with, or start a new scope to re-learn."
+        )
 
 
 @runtime_checkable

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ..config import LearnerConfig
 from ..models import Lesson
 
@@ -17,14 +19,26 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+_TAG_RE = re.compile(r"<\s*/?\s*learned_lessons\s*>", re.IGNORECASE)
+
+
 def _neutralize(text: str) -> str:
     """Strip the block's own delimiters out of lesson text.
 
     Lesson text is model-written from an untrusted transcript, so it can
     contain the closing tag. Rendered verbatim it would end the data block
     early and the remainder would read as top-level prompt instructions.
+
+    Substitution repeats to a fixed point: a single pass lets a nested tag
+    re-form one ("</learned_<learned_lessons>lessons>" collapses into a real
+    closing tag when the inner tag is removed). Whitespace is then collapsed so
+    a lesson cannot forge additional numbered entries with embedded newlines.
     """
-    return text.replace(CLOSE_TAG, "").replace(OPEN_TAG, "")
+    previous = None
+    while previous != text:
+        previous = text
+        text = _TAG_RE.sub(" ", text)
+    return " ".join(text.split())
 
 
 class Injector:

@@ -12,16 +12,29 @@ evidence — built-in exploration without an explicit bandit.
 
 from __future__ import annotations
 
+import threading
+
 from ..config import LearnerConfig
 from ..models import Lesson, LessonState, Outcome, utcnow
 from ..store.base import Store
-from .scoring import beta_lower_bound, beta_mean, days_between, decay, evidence_trials
+from .scoring import beta_lower_bound, beta_mean, days_between, decay, decay_factor
 
 
 class Lifecycle:
-    def __init__(self, store: Store, config: LearnerConfig | None = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        config: LearnerConfig | None = None,
+        lock: threading.RLock | None = None,
+    ) -> None:
         self._store = store
         self._config = config or LearnerConfig()
+        # credit() and maintain() read a lesson, mutate it, and write every
+        # column back. The store only locks individual statements, so without
+        # this two runs finishing concurrently (the documented AsyncLearner
+        # path) overwrite each other's evidence. Shared with the Learner, which
+        # does the same read-modify-write when recording an injection.
+        self._lock = lock or threading.RLock()
 
     # -- credit assignment -------------------------------------------------
 
@@ -46,26 +59,54 @@ class Lifecycle:
             add_alpha, add_beta = 0.0, 1.0
         elif outcome.status == "partial":
             score = outcome.score if outcome.score is not None else 0.5
+            # A score outside [0,1] is not a probability; clamping here keeps a
+            # caller's 0-10 scale from writing evidence below the prior.
+            score = min(1.0, max(0.0, score))
             add_alpha, add_beta = score, 1.0 - score
         else:  # unknown teaches nothing
             return
 
-        for injection in injections:
-            lesson = self._store.get_lesson(injection.lesson_id)
-            # Reverse any previously applied credit (idempotent re-crediting).
-            lesson.alpha -= injection.credited_alpha
-            lesson.beta -= injection.credited_beta
-            lesson.alpha += add_alpha
-            lesson.beta += add_beta
-            self._store.upsert_lesson(lesson)
-            injection.credited = True
-            injection.credited_alpha = add_alpha
-            injection.credited_beta = add_beta
-            self._store.update_injection(injection)
+        with self._lock:
+            for injection in injections:
+                lesson = self._store.get_lesson(injection.lesson_id)
+                # Reverse any credit this injection previously applied. Decay
+                # has shrunk that contribution toward the prior since, so
+                # reverse the decayed amount: subtracting the raw figure
+                # removes more evidence than is actually present and walks
+                # alpha/beta below the prior and eventually negative.
+                factor = self._decay_since(injection.created_at, lesson.last_decay_at)
+                lesson.alpha -= injection.credited_alpha * factor
+                lesson.beta -= injection.credited_beta * factor
+                lesson.alpha += add_alpha
+                lesson.beta += add_beta
+                # Evidence can never be weaker than the Beta(1,1) prior.
+                lesson.alpha = max(1.0, lesson.alpha)
+                lesson.beta = max(1.0, lesson.beta)
+                if not injection.credited:
+                    lesson.credited_trials += 1.0
+                self._store.upsert_lesson(lesson)
+                injection.credited = True
+                injection.credited_alpha = add_alpha
+                injection.credited_beta = add_beta
+                self._store.update_injection(injection)
+
+    def _decay_since(self, credited_at: str, last_decay_at: str | None) -> float:
+        """How much ``decay`` has shrunk a contribution made at ``credited_at``.
+
+        Decay compounds as lam**(total elapsed days), so the factor applied to
+        any earlier contribution is lam**(days from that contribution to the
+        last decay)."""
+        if not last_decay_at:
+            return 1.0
+        return decay_factor(days_between(credited_at, last_decay_at), self._config.decay_lambda)
 
     # -- maintenance: decay + transitions + cap ------------------------------
 
     def maintain(self, scope: str) -> None:
+        with self._lock:
+            self._maintain_locked(scope)
+
+    def _maintain_locked(self, scope: str) -> None:
         baseline = self._store.baseline_success_rate(scope, self._config.baseline_window)
         now = utcnow()
         cfg = self._config
@@ -80,11 +121,12 @@ class Lifecycle:
 
             lower = beta_lower_bound(lesson.alpha, lesson.beta, cfg.z)
             mean = beta_mean(lesson.alpha, lesson.beta)
-            # Trials are counted from credited evidence, never from
-            # times_injected: a run that is abandoned or ends without a verdict
-            # bumps times_injected but records no outcome, and gating on it
-            # retired healthy lessons at the 0.5 prior having never been blamed.
-            trials = evidence_trials(lesson.alpha, lesson.beta)
+            # Trials are the monotone count of credited outcomes. Not
+            # times_injected (bumped at retrieval, before any outcome exists, so
+            # abandoned runs would retire healthy lessons) and not alpha+beta-2
+            # (decay caps that below the thresholds for anything injected less
+            # often than weekly, so a failing lesson could never be retired).
+            trials = lesson.credited_trials
 
             # Asymmetry, on purpose: PROMOTE on the pessimistic lower bound,
             # RETIRE only when even the central estimate (mean) is clearly

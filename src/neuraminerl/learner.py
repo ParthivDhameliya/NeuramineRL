@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -107,7 +108,12 @@ class Learner:
         self._dedup = Deduplicator(self._store, self._embedder, self._llm, self.config)
         self._retriever = Retriever(self._store, self._embedder, self.config)
         self._injector = Injector(self.config)
-        self._lifecycle = Lifecycle(self._store, self.config)
+        # Recording an injection and crediting an outcome both read a lesson,
+        # mutate it, and write every column back. The store locks statements,
+        # not sequences, so these share one lock to stop concurrent runs from
+        # overwriting each other's evidence.
+        self._evidence_lock = threading.RLock()
+        self._lifecycle = Lifecycle(self._store, self.config, lock=self._evidence_lock)
 
     @staticmethod
     def _default_embedder() -> Embedder:
@@ -216,20 +222,25 @@ class Learner:
         block, included = self._injector.render([lesson for lesson, _ in ranked])
         injections = []
         now = utcnow()
-        for rank, lesson in enumerate(included):
-            injections.append(
-                Injection(
-                    trajectory_id=trajectory.id,
-                    lesson_id=lesson.id,
-                    lesson_version=lesson.version,
-                    retrieval_score=scores[lesson.id],
-                    rank=rank,
+        with self._evidence_lock:
+            for rank, lesson in enumerate(included):
+                injections.append(
+                    Injection(
+                        trajectory_id=trajectory.id,
+                        lesson_id=lesson.id,
+                        lesson_version=lesson.version,
+                        retrieval_score=scores[lesson.id],
+                        rank=rank,
+                    )
                 )
-            )
-            lesson.times_injected += 1
-            lesson.last_injected_at = now
-            self._store.upsert_lesson(lesson)
-        self._store.log_injections(injections)
+                # Re-read under the lock: the ranked copy is a snapshot, and
+                # writing the whole row back from it would clobber evidence a
+                # concurrent run credited in the meantime.
+                fresh = self._store.get_lesson(lesson.id)
+                fresh.times_injected += 1
+                fresh.last_injected_at = now
+                self._store.upsert_lesson(fresh)
+            self._store.log_injections(injections)
         return RecallResult(included, block)
 
     def _finish(

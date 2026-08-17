@@ -75,7 +75,7 @@ def test_low_confidence_gated(learner: Learner) -> None:
         "Bad advice.",
         alpha=1.0,
         beta=9.0,
-        times_injected=5,  # had its exploration chances
+        credited_trials=8.0,  # had its exploration chances, and blew them
     )
     result = learner.recall("submit the booking form")
     assert not result
