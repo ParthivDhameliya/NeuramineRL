@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import utils.clients
+import utils.http_session
+import utils.transport
+import utils.session
 import json
 import threading
 import traceback
@@ -160,7 +164,14 @@ class Run:
         Passing ``error`` without ``success`` means failure: reporting an error
         and having it recorded as an outcome that teaches nothing would be a
         silent no-op. ``detail`` alone stays neutral.
+
+        ``score`` is a probability of success in [0.0, 1.0]. It becomes Beta
+        evidence directly, so a value on some other scale (0-10, 0-100) would
+        write evidence weaker than the prior; that is rejected here rather than
+        silently corrupting the lesson's health.
         """
+        if score is not None and not 0.0 <= score <= 1.0:
+            raise ValueError(f"score must be between 0.0 and 1.0, got {score!r}")
         with self._lock:
             if self._ended:
                 return

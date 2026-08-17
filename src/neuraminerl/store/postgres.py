@@ -36,8 +36,11 @@ from ..models import (
     new_id,
     utcnow,
 )
+from .base import check_query_dim
 
 _SCHEMA_VERSION = 1
+# Arbitrary constant, shared by every opener so they serialize on the same lock.
+_SCHEMA_LOCK_ID = 7318451234567890
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trajectories (
@@ -86,6 +89,7 @@ CREATE TABLE IF NOT EXISTS lessons (
   alpha DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   beta DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   times_injected INTEGER NOT NULL DEFAULT 0,
+  credited_trials DOUBLE PRECISION NOT NULL DEFAULT 0.0,
   version INTEGER NOT NULL DEFAULT 1,
   merged_into TEXT,
   source_trajectory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -161,7 +165,21 @@ class PostgresStore:
             open=True,
         )
         with self._pool.connection() as conn:
+            # CREATE TABLE IF NOT EXISTS checks the catalog before taking the
+            # creation lock, so simultaneous opens (many workers starting at
+            # once) race and raise a raw UniqueViolation on the system catalog.
+            # This transaction-scoped lock serializes setup; it releases on
+            # commit, and everyone after the winner sees a committed schema.
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
             conn.execute(_SCHEMA)
+            conn.execute(
+                "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS "
+                "credited_trials DOUBLE PRECISION NOT NULL DEFAULT 0.0"
+            )
+            conn.execute(
+                "UPDATE lessons SET credited_trials = GREATEST(0.0, alpha + beta - 2.0) "
+                "WHERE credited_trials = 0.0 AND alpha + beta > 2.0"
+            )
             conn.execute(
                 "INSERT INTO schema_meta (key, value) VALUES ('version', %s) "
                 "ON CONFLICT (key) DO NOTHING",
@@ -343,11 +361,11 @@ class PostgresStore:
                 self._check_dim(conn, embedding, lesson.scope)
                 conn.execute(
                     """INSERT INTO lessons (id, scope, condition, advice, rationale, embedding,
-                         state, alpha, beta, times_injected, version, merged_into,
-                         source_trajectory_ids, last_injected_at, last_reinforced_at,
-                         last_decay_at, created_at, updated_at)
+                         state, alpha, beta, times_injected, credited_trials, version,
+                         merged_into, source_trajectory_ids, last_injected_at,
+                         last_reinforced_at, last_decay_at, created_at, updated_at)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s)""",
+                               %s, %s, %s, %s)""",
                     (
                         lesson.id,
                         lesson.scope,
@@ -359,6 +377,7 @@ class PostgresStore:
                         lesson.alpha,
                         lesson.beta,
                         lesson.times_injected,
+                        lesson.credited_trials,
                         lesson.version,
                         lesson.merged_into,
                         self._jsonb(lesson.source_trajectory_ids),
@@ -371,9 +390,9 @@ class PostgresStore:
                 )
             else:
                 sets = """scope=%s, condition=%s, advice=%s, rationale=%s, state=%s, alpha=%s,
-                          beta=%s, times_injected=%s, version=%s, merged_into=%s,
-                          source_trajectory_ids=%s, last_injected_at=%s, last_reinforced_at=%s,
-                          last_decay_at=%s, updated_at=%s"""
+                          beta=%s, times_injected=%s, credited_trials=%s, version=%s,
+                          merged_into=%s, source_trajectory_ids=%s, last_injected_at=%s,
+                          last_reinforced_at=%s, last_decay_at=%s, updated_at=%s"""
                 params: list[object] = [
                     lesson.scope,
                     lesson.condition,
@@ -383,6 +402,7 @@ class PostgresStore:
                     lesson.alpha,
                     lesson.beta,
                     lesson.times_injected,
+                    lesson.credited_trials,
                     lesson.version,
                     lesson.merged_into,
                     self._jsonb(lesson.source_trajectory_ids),
@@ -405,15 +425,19 @@ class PostgresStore:
         assert embedding is not None
         dim = int(embedding.shape[-1])
         key = f"embedding_dim:{scope}"
-        row = conn.execute("SELECT value FROM schema_meta WHERE key = %s", (key,)).fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO schema_meta (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
-                (key, str(dim)),
-            )
-        elif int(row["value"]) != dim:
+        # Claim-or-read in one statement. A plain SELECT-then-INSERT lets two
+        # concurrent first-writers with different widths both pass the guard,
+        # after which every search of that scope dies inside np.vstack. The
+        # no-op DO UPDATE takes a row lock and RETURNING hands back the
+        # committed winner, so the loser sees the other width and raises.
+        stored = conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = schema_meta.value RETURNING value",
+            (key, str(dim)),
+        ).fetchone()["value"]
+        if int(stored) != dim:
             raise ConfigError(
-                f"Scope '{scope}' stores {row['value']}-dim lesson embeddings but the current "
+                f"Scope '{scope}' stores {stored}-dim lesson embeddings but the current "
                 f"embedder produces {dim}-dim vectors. Use the original embedder, or start a "
                 f"new scope (or database) to re-learn."
             )
@@ -430,6 +454,7 @@ class PostgresStore:
             alpha=row["alpha"],
             beta=row["beta"],
             times_injected=row["times_injected"],
+            credited_trials=row["credited_trials"],
             version=row["version"],
             merged_into=row["merged_into"],
             source_trajectory_ids=_as_json(row["source_trajectory_ids"]),
@@ -477,6 +502,7 @@ class PostgresStore:
         if not rows:
             return []
         matrix = np.vstack([np.frombuffer(bytes(r["embedding"]), dtype=np.float32) for r in rows])
+        check_query_dim(matrix, query_vec, scope)
         sims = matrix @ query_vec.reshape(-1)
         order = np.argsort(-sims)[:k]
         return [(self._lesson_from_row(rows[int(pos)]), float(sims[int(pos)])) for pos in order]

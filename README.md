@@ -103,8 +103,13 @@ instead of breaking the process. pgvector is an optimization for far larger stor
 requirement. Implement `Store` yourself for MySQL, Mongo, or a hosted vector DB.
 
 Embedding width is enforced per scope rather than per database, so agents sharing one Postgres
-may use different embedders — a worker without `model2vec` falling back to the hashed embedder
-cannot lock the others out.
+may use different embedders without locking each other out.
+
+One caveat worth knowing: that guard compares vector *width*, which is not the same as embedder
+identity. The hashed fallback and the default `model2vec` model are both 256-dimensional, so if
+one worker lacks `model2vec` and silently falls back, its vectors land in the same scope from a
+different vector space and retrieval quality degrades without an error. Install the `embeddings`
+extra everywhere, or pin one embedder explicitly per scope.
 
 **Async agents.** `AsyncLearner` mirrors the sync API but offloads every blocking call (store IO
 and the reflection call inside `end()`) to a worker thread, so LangGraph nodes and FastAPI
@@ -162,7 +167,7 @@ Two tuning notes:
 | `nm.run(task=...)` | Context manager. Yields a `Run`; unhandled exceptions become failures. |
 | `run.lessons` | Recalled lessons for this task; `str()` renders the injectable prompt block. Recall through the run binds lessons for credit assignment. |
 | `run.log(messages)` / `run.log_tool_call(...)` | Best-effort trajectory capture. |
-| `run.end(success=..., error=..., score=...)` | Record the outcome; triggers reflection on failure. Passing `error=` without `success=` counts as a failure. |
+| `run.end(success=..., error=..., score=...)` | Record the outcome; triggers reflection on failure. Passing `error=` without `success=` counts as a failure. `score` is a success probability in `[0.0, 1.0]`. |
 | `nm.feedback(run_id, note, success=...)` | Delayed outcome ("user said this was wrong two hours later"). |
 | `nm.lessons()` / `nm.forget(lesson_id)` | Audit and control what gets injected. |
 | `nm.stats()` | Baseline success rate, lesson counts by state, cumulative injected-token estimate. |
