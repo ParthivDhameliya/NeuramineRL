@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..config import LearnerConfig
 from ..embeddings.base import Embedder
-from ..lessons.scoring import beta_lower_bound, beta_mean, evidence_trials
+from ..lessons.scoring import beta_lower_bound, beta_mean
 from ..models import Lesson
 from ..store.base import Store
 
@@ -40,11 +40,9 @@ class Retriever:
             # The gate uses the mean and only applies once a lesson has had
             # its exploration chances — the same condition the lifecycle uses
             # to retire, so nothing gets stuck un-injectable but un-retirable.
-            # Like the lifecycle, it counts credited evidence rather than
+            # Like the lifecycle, it counts credited outcomes rather than
             # exposure, so unfinished runs cannot gate a lesson out.
-            if evidence_trials(
-                lesson.alpha, lesson.beta
-            ) >= cfg.retire_candidate_min_injections and (mean < gate):
+            if lesson.credited_trials >= cfg.retire_candidate_min_injections and mean < gate:
                 continue
             if lesson.state == "active":
                 actives.append((lesson, similarity * (0.5 + lower)))

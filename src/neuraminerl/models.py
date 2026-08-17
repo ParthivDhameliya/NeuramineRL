@@ -82,6 +82,15 @@ class Lesson:
     alpha: float = 1.0
     beta: float = 1.0
     times_injected: int = 0
+    credited_trials: float = 0.0
+    """Outcomes actually credited to this lesson, monotone and never decayed.
+
+    Lifecycle thresholds count this, not ``times_injected`` (which counts
+    exposure and is bumped at retrieval, before any outcome exists) and not
+    ``alpha+beta-2`` (which decay shrinks, so with injections more than about a
+    week apart the count saturates below the thresholds and a failing lesson
+    could never be retired).
+    """
     version: int = 1
     merged_into: str | None = None
     source_trajectory_ids: list[str] = field(default_factory=list)

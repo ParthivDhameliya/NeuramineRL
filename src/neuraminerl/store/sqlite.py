@@ -28,6 +28,7 @@ from ..models import (
     new_id,
     utcnow,
 )
+from .base import check_query_dim
 
 _SCHEMA_VERSION = 1
 
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS lessons (
   alpha REAL NOT NULL DEFAULT 1.0,
   beta REAL NOT NULL DEFAULT 1.0,
   times_injected INTEGER NOT NULL DEFAULT 0,
+  credited_trials REAL NOT NULL DEFAULT 0.0,
   version INTEGER NOT NULL DEFAULT 1,
   merged_into TEXT,
   source_trajectory_ids TEXT NOT NULL DEFAULT '[]',
@@ -134,6 +136,15 @@ class SqliteStore:
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', ?)",
             (str(_SCHEMA_VERSION),),
         )
+        # Databases written before lessons tracked credited outcomes have no
+        # such column. Backfill from the decayed evidence, the best estimate
+        # available, so existing lessons keep a plausible trial count.
+        columns = {r["name"] for r in self._conn.execute("PRAGMA table_info(lessons)")}
+        if "credited_trials" not in columns:
+            self._conn.execute(
+                "ALTER TABLE lessons ADD COLUMN credited_trials REAL NOT NULL DEFAULT 0.0"
+            )
+            self._conn.execute("UPDATE lessons SET credited_trials = MAX(0.0, alpha + beta - 2.0)")
         # Databases written before embedding width was tracked per scope carry
         # a single global row; hand it to every scope that already has lessons
         # so the guard keeps holding across the upgrade.
@@ -305,69 +316,88 @@ class SqliteStore:
         with self._lock:
             blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
             existing = self._conn.execute(
-                "SELECT id FROM lessons WHERE id = ?", (lesson.id,)
+                "SELECT id, scope FROM lessons WHERE id = ?", (lesson.id,)
             ).fetchone()
+            previous_scope = existing["scope"] if existing is not None else None
             lesson.updated_at = utcnow()
-            if existing is None:
-                if blob is None:
-                    raise ConfigError("New lessons must be saved with an embedding")
-                self._check_dim(embedding, lesson.scope)
-                self._conn.execute(
-                    """INSERT INTO lessons (id, scope, condition, advice, rationale, embedding,
-                         state, alpha, beta, times_injected, version, merged_into,
-                         source_trajectory_ids, last_injected_at, last_reinforced_at,
-                         last_decay_at, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        lesson.id,
+            try:
+                if existing is None:
+                    if blob is None:
+                        raise ConfigError("New lessons must be saved with an embedding")
+                    self._check_dim(embedding, lesson.scope)
+                    self._conn.execute(
+                        """INSERT INTO lessons (id, scope, condition, advice, rationale, embedding,
+                             state, alpha, beta, times_injected, credited_trials, version,
+                             merged_into, source_trajectory_ids, last_injected_at,
+                             last_reinforced_at, last_decay_at, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            lesson.id,
+                            lesson.scope,
+                            lesson.condition,
+                            lesson.advice,
+                            lesson.rationale,
+                            blob,
+                            lesson.state,
+                            lesson.alpha,
+                            lesson.beta,
+                            lesson.times_injected,
+                            lesson.credited_trials,
+                            lesson.version,
+                            lesson.merged_into,
+                            json.dumps(lesson.source_trajectory_ids),
+                            lesson.last_injected_at,
+                            lesson.last_reinforced_at,
+                            lesson.last_decay_at,
+                            lesson.created_at,
+                            lesson.updated_at,
+                        ),
+                    )
+                else:
+                    sets = """scope=?, condition=?, advice=?, rationale=?, state=?, alpha=?,
+                              beta=?, times_injected=?, credited_trials=?, version=?,
+                              merged_into=?, source_trajectory_ids=?, last_injected_at=?,
+                              last_reinforced_at=?, last_decay_at=?, updated_at=?"""
+                    params: list[object] = [
                         lesson.scope,
                         lesson.condition,
                         lesson.advice,
                         lesson.rationale,
-                        blob,
                         lesson.state,
                         lesson.alpha,
                         lesson.beta,
                         lesson.times_injected,
+                        lesson.credited_trials,
                         lesson.version,
                         lesson.merged_into,
                         json.dumps(lesson.source_trajectory_ids),
                         lesson.last_injected_at,
                         lesson.last_reinforced_at,
                         lesson.last_decay_at,
-                        lesson.created_at,
                         lesson.updated_at,
-                    ),
-                )
-            else:
-                sets = """scope=?, condition=?, advice=?, rationale=?, state=?, alpha=?, beta=?,
-                          times_injected=?, version=?, merged_into=?, source_trajectory_ids=?,
-                          last_injected_at=?, last_reinforced_at=?, last_decay_at=?, updated_at=?"""
-                params: list[object] = [
-                    lesson.scope,
-                    lesson.condition,
-                    lesson.advice,
-                    lesson.rationale,
-                    lesson.state,
-                    lesson.alpha,
-                    lesson.beta,
-                    lesson.times_injected,
-                    lesson.version,
-                    lesson.merged_into,
-                    json.dumps(lesson.source_trajectory_ids),
-                    lesson.last_injected_at,
-                    lesson.last_reinforced_at,
-                    lesson.last_decay_at,
-                    lesson.updated_at,
-                ]
+                    ]
+                    if blob is not None:
+                        self._check_dim(embedding, lesson.scope)
+                        sets += ", embedding=?"
+                        params.append(blob)
+                    params.append(lesson.id)
+                    self._conn.execute(f"UPDATE lessons SET {sets} WHERE id=?", params)
                 if blob is not None:
-                    self._check_dim(embedding, lesson.scope)
-                    sets += ", embedding=?"
-                    params.append(blob)
-                params.append(lesson.id)
-                self._conn.execute(f"UPDATE lessons SET {sets} WHERE id=?", params)
-            self._conn.commit()
+                    # Register the width only once the row is really there, so a
+                    # failed insert cannot leave a scope pinned to a width it
+                    # stores no vectors for.
+                    self._register_dim(embedding, lesson.scope)
+                self._conn.commit()
+            except BaseException:
+                # Nothing here rolls back on its own, so a later unrelated
+                # commit() would otherwise persist this half-written state.
+                self._conn.rollback()
+                raise
             self._matrix_cache.pop(lesson.scope, None)
+            if previous_scope is not None and previous_scope != lesson.scope:
+                # A moved lesson stays in the old scope's cached matrix
+                # otherwise, and keeps being returned by searches there.
+                self._matrix_cache.pop(previous_scope, None)
 
     def _check_dim(self, embedding: Vector | None, scope: str) -> None:
         """Embedding width is enforced per scope, not per database: a search
@@ -377,16 +407,19 @@ class SqliteStore:
         dim = int(embedding.shape[-1])
         key = f"embedding_dim:{scope}"
         row = self._conn.execute("SELECT value FROM schema_meta WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)", (key, str(dim))
-            )
-        elif int(row["value"]) != dim:
+        if row is not None and int(row["value"]) != dim:
             raise ConfigError(
                 f"Scope '{scope}' stores {row['value']}-dim lesson embeddings but the current "
                 f"embedder produces {dim}-dim vectors. Use the original embedder, or start a "
                 f"new scope (or database) to re-learn."
             )
+
+    def _register_dim(self, embedding: Vector | None, scope: str) -> None:
+        assert embedding is not None
+        self._conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
+            (f"embedding_dim:{scope}", str(int(embedding.shape[-1]))),
+        )
 
     @staticmethod
     def _lesson_from_row(row: sqlite3.Row) -> Lesson:
@@ -400,6 +433,7 @@ class SqliteStore:
             alpha=row["alpha"],
             beta=row["beta"],
             times_injected=row["times_injected"],
+            credited_trials=row["credited_trials"],
             version=row["version"],
             merged_into=row["merged_into"],
             source_trajectory_ids=json.loads(row["source_trajectory_ids"]),
@@ -442,9 +476,13 @@ class SqliteStore:
         with self._lock:
             cached = self._matrix_cache.get(scope)
             if cached is None:
+                # Cache every state, not just candidate/active: the caller's
+                # states argument is applied by the mask below, and hardcoding
+                # it here made ``states`` a lie and diverged from PostgresStore,
+                # which honours it.
                 rows = self._conn.execute(
                     "SELECT id, state, embedding FROM lessons WHERE scope = ? "
-                    "AND state IN ('candidate', 'active') AND embedding IS NOT NULL",
+                    "AND embedding IS NOT NULL",
                     (scope,),
                 ).fetchall()
                 ids = [r["id"] for r in rows]
@@ -462,6 +500,7 @@ class SqliteStore:
         mask = [i for i, s in enumerate(row_states) if s in wanted]
         if not mask:
             return []
+        check_query_dim(matrix, query_vec, scope)
         sims = matrix[mask] @ query_vec.reshape(-1)
         order = np.argsort(-sims)[:k]
         results: list[tuple[Lesson, float]] = []
